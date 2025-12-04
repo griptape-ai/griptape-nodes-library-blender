@@ -10,6 +10,7 @@ from griptape_nodes.traits.options import Options
 from griptape_nodes.exe_types.core_types import Parameter, ParameterMode, ParameterGroup
 from griptape_nodes.exe_types.node_types import ControlNode
 from griptape_nodes.retained_mode.griptape_nodes import logger, GriptapeNodes
+from griptape_nodes.retained_mode.events.os_events import ExistingFilePolicy
 
 # Import socket client utilities
 from socket_client import health_check, get_scene_info, list_cameras, render_camera
@@ -394,7 +395,7 @@ class BlenderCameraCapture(ControlNode):
             
             try:
                 static_url = GriptapeNodes.StaticFilesManager().save_static_file(
-                    image_data, filename
+                    image_data, filename, ExistingFilePolicy.CREATE_NEW
                 )
             except Exception as save_error:
                 error_msg = f"Failed to save image: {str(save_error)}"
