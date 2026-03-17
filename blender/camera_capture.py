@@ -2,14 +2,13 @@ import json
 import base64
 from typing import Optional, Any
 from io import BytesIO
-import time
 
 from griptape.artifacts import ImageArtifact, ImageUrlArtifact, ErrorArtifact, TextArtifact
-from griptape_nodes.traits.options import Options
-
 from griptape_nodes.exe_types.core_types import Parameter, ParameterMode, ParameterGroup
 from griptape_nodes.exe_types.node_types import ControlNode
-from griptape_nodes.retained_mode.griptape_nodes import logger, GriptapeNodes
+from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
+from griptape_nodes.retained_mode.griptape_nodes import logger
+from griptape_nodes.traits.options import Options
 
 # Import socket client utilities
 from socket_client import health_check, get_scene_info, list_cameras, render_camera
@@ -169,6 +168,13 @@ class BlenderCameraCapture(ControlNode):
         self.add_node_element(output_group)
 
         # Output Parameters
+        self._output_file = ProjectFileParameter(
+            node=self,
+            name="output_file",
+            default_filename="blender_capture.png",
+        )
+        self._output_file.add_parameter()
+
         self.add_parameter(
             Parameter(
                 name="image_output",
@@ -387,15 +393,10 @@ class BlenderCameraCapture(ControlNode):
                 self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
                 return
 
-            # Save image using StaticFilesManager
-            file_extension = output_format.lower()
-            timestamp = int(time.time() * 1000)
-            filename = f"blender_capture_{camera_name}_{resolution_x}x{resolution_y}_{timestamp}.{file_extension}"
-            
+            # Save image
             try:
-                static_url = GriptapeNodes.StaticFilesManager().save_static_file(
-                    image_data, filename
-                )
+                dest = self._output_file.build_file()
+                saved = dest.write_bytes(image_data)
             except Exception as save_error:
                 error_msg = f"Failed to save image: {str(save_error)}"
                 self.parameter_output_values["status_output"] = f"Error: {error_msg}"
@@ -403,7 +404,7 @@ class BlenderCameraCapture(ControlNode):
                 return
 
             # Create ImageUrlArtifact and set output
-            image_artifact = ImageUrlArtifact(value=static_url, name=f"blender_capture_{camera_name}_{timestamp}")
+            image_artifact = ImageUrlArtifact(value=saved.location, name=f"blender_capture_{camera_name}")
             self.parameter_output_values["image_output"] = image_artifact
 
             # Update status with success info
