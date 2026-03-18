@@ -302,7 +302,10 @@ class BlenderCameraCapture(ControlNode):
         
         return None
 
-    def process(self):
+    async def aprocess(self) -> None:
+        await self._process()
+
+    async def _process(self) -> None:
         """Capture a frame from the specified Blender camera."""
         try:
             # Get parameters
