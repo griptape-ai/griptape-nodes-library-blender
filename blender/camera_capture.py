@@ -2,14 +2,13 @@ import json
 import base64
 from typing import Optional, Any
 from io import BytesIO
-import time
 
 from griptape.artifacts import ImageArtifact, ImageUrlArtifact, ErrorArtifact, TextArtifact
-from griptape_nodes.traits.options import Options
-
 from griptape_nodes.exe_types.core_types import Parameter, ParameterMode, ParameterGroup
 from griptape_nodes.exe_types.node_types import ControlNode
-from griptape_nodes.retained_mode.griptape_nodes import logger, GriptapeNodes
+from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
+from griptape_nodes.retained_mode.griptape_nodes import logger
+from griptape_nodes.traits.options import Options
 
 # Import socket client utilities
 from socket_client import health_check, get_scene_info, list_cameras, render_camera
@@ -169,6 +168,13 @@ class BlenderCameraCapture(ControlNode):
         self.add_node_element(output_group)
 
         # Output Parameters
+        self._output_file = ProjectFileParameter(
+            node=self,
+            name="output_file",
+            default_filename="blender_capture.png",
+        )
+        self._output_file.add_parameter()
+
         self.add_parameter(
             Parameter(
                 name="image_output",
@@ -296,7 +302,10 @@ class BlenderCameraCapture(ControlNode):
         
         return None
 
-    def process(self):
+    async def aprocess(self) -> None:
+        await self._process()
+
+    async def _process(self) -> None:
         """Capture a frame from the specified Blender camera."""
         try:
             # Get parameters
@@ -387,15 +396,10 @@ class BlenderCameraCapture(ControlNode):
                 self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
                 return
 
-            # Save image using StaticFilesManager
-            file_extension = output_format.lower()
-            timestamp = int(time.time() * 1000)
-            filename = f"blender_capture_{camera_name}_{resolution_x}x{resolution_y}_{timestamp}.{file_extension}"
-            
+            # Save image
             try:
-                static_url = GriptapeNodes.StaticFilesManager().save_static_file(
-                    image_data, filename
-                )
+                dest = self._output_file.build_file()
+                saved = dest.write_bytes(image_data)
             except Exception as save_error:
                 error_msg = f"Failed to save image: {str(save_error)}"
                 self.parameter_output_values["status_output"] = f"Error: {error_msg}"
@@ -403,7 +407,7 @@ class BlenderCameraCapture(ControlNode):
                 return
 
             # Create ImageUrlArtifact and set output
-            image_artifact = ImageUrlArtifact(value=static_url, name=f"blender_capture_{camera_name}_{timestamp}")
+            image_artifact = ImageUrlArtifact(value=saved.location)
             self.parameter_output_values["image_output"] = image_artifact
 
             # Update status with success info
@@ -422,7 +426,7 @@ class BlenderCameraCapture(ControlNode):
             self.parameter_output_values["status_output"] = f"Error: {error_msg}"
             self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
 
-    def after_value_set(self, parameter, value, modified_parameters_set):
+    def after_value_set(self, parameter, value):
         """Update camera choices when cameras_input receives new data."""
         if parameter.name == "cameras_input" and value:
             try:
@@ -440,7 +444,7 @@ class BlenderCameraCapture(ControlNode):
                             except (json.JSONDecodeError, AttributeError) as e:
                                 # Skip invalid items
                                 continue
-                    
+
                     if camera_names:
                         # Update current instance camera parameter choices
                         camera_param = self.get_parameter_by_name("camera_name")
@@ -457,29 +461,25 @@ class BlenderCameraCapture(ControlNode):
                                     if hasattr(camera_param, 'value'):
                                         camera_param.value = camera_names[0]
                                     self.parameter_values["camera_name"] = camera_names[0]
-                                    modified_parameters_set.add("camera_name")
-                                
-                                # Include the parameter in modified_parameters_set to trigger UI update
-                                modified_parameters_set.add("camera_name")
-                            
+
                             # Note: Not updating all other instances here to prevent feedback loops
                             # Other instances will get updated when their own cameras_input changes
-                        
+
                         # Update camera metadata display after camera list is updated
                         try:
-                            self._update_camera_metadata_display(modified_parameters_set)
+                            self._update_camera_metadata_display()
                         except Exception as metadata_error:
                             # Don't let metadata errors break the camera list update
                             pass
-                            
+
             except Exception as e:
                 # Don't let processing errors break the node
                 pass
-                
+
         elif parameter.name == "camera_name":
             # Update metadata display when camera selection changes
             try:
-                self._update_camera_metadata_display(modified_parameters_set)
+                self._update_camera_metadata_display()
             except Exception as metadata_error:
                 # Don't let metadata errors break camera selection
                 pass
@@ -547,7 +547,7 @@ class BlenderCameraCapture(ControlNode):
                 if camera_param:
                     instance._update_camera_choices(camera_param, camera_names)
 
-    def after_incoming_connection(self, source_node, source_parameter, target_parameter, modified_parameters_set=None):
+    def after_incoming_connection(self, source_node, source_parameter, target_parameter):
         """Refresh camera list when connections are made."""
         if target_parameter.name == "camera_name":
             # Camera updates now handled by BlenderCameraList node via cameras_input
@@ -556,7 +556,7 @@ class BlenderCameraCapture(ControlNode):
             # Camera list data will flow through this connection automatically
             pass
 
-    def _update_camera_metadata_display(self, modified_parameters_set=None):
+    def _update_camera_metadata_display(self):
         """Update the camera metadata label parameters based on current selection and available data."""
         camera_name = self.get_parameter_value("camera_name") or "Camera"
         cameras_input = self.get_parameter_value("cameras_input")
@@ -640,9 +640,3 @@ class BlenderCameraCapture(ControlNode):
             self.set_parameter_value("dof_info_label", "-") 
             self.set_parameter_value("transform_info_label", "-")
             
-        # Mark all label parameters as modified for UI updates
-        if modified_parameters_set is not None:
-            modified_parameters_set.update([
-                "camera_status_label", "focal_length_label", "sensor_info_label",
-                "dof_info_label", "transform_info_label"
-            ]) 
