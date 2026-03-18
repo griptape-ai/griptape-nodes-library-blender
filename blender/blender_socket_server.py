@@ -335,6 +335,12 @@ if BLENDER_AVAILABLE:
         
         def execute(self, context):
             blender_server.start()
+            if blender_server.running:
+                self.report({'INFO'}, f"Socket Server started on {blender_server.host}:{blender_server.port}")
+            else:
+                self.report({'ERROR'}, "Socket Server failed to start - check if port 8765 is already in use")
+            if context.area:
+                context.area.tag_redraw()
             return {'FINISHED'}
 
     class BLENDER_OT_stop_socket_server(bpy.types.Operator):
@@ -342,9 +348,12 @@ if BLENDER_AVAILABLE:
         bl_idname = "blender.stop_socket_server"
         bl_label = "Stop Socket Server"
         bl_description = "Stop the Blender Socket Server"
-        
+
         def execute(self, context):
             blender_server.stop()
+            self.report({'INFO'}, "Socket Server stopped")
+            if context.area:
+                context.area.tag_redraw()
             return {'FINISHED'}
 
     class BLENDER_PT_socket_server_panel(bpy.types.Panel):
