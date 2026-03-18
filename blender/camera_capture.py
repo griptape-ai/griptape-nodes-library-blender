@@ -423,7 +423,7 @@ class BlenderCameraCapture(ControlNode):
             self.parameter_output_values["status_output"] = f"Error: {error_msg}"
             self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
 
-    def after_value_set(self, parameter, value, modified_parameters_set):
+    def after_value_set(self, parameter, value):
         """Update camera choices when cameras_input receives new data."""
         if parameter.name == "cameras_input" and value:
             try:
@@ -441,7 +441,7 @@ class BlenderCameraCapture(ControlNode):
                             except (json.JSONDecodeError, AttributeError) as e:
                                 # Skip invalid items
                                 continue
-                    
+
                     if camera_names:
                         # Update current instance camera parameter choices
                         camera_param = self.get_parameter_by_name("camera_name")
@@ -458,29 +458,25 @@ class BlenderCameraCapture(ControlNode):
                                     if hasattr(camera_param, 'value'):
                                         camera_param.value = camera_names[0]
                                     self.parameter_values["camera_name"] = camera_names[0]
-                                    modified_parameters_set.add("camera_name")
-                                
-                                # Include the parameter in modified_parameters_set to trigger UI update
-                                modified_parameters_set.add("camera_name")
-                            
+
                             # Note: Not updating all other instances here to prevent feedback loops
                             # Other instances will get updated when their own cameras_input changes
-                        
+
                         # Update camera metadata display after camera list is updated
                         try:
-                            self._update_camera_metadata_display(modified_parameters_set)
+                            self._update_camera_metadata_display()
                         except Exception as metadata_error:
                             # Don't let metadata errors break the camera list update
                             pass
-                            
+
             except Exception as e:
                 # Don't let processing errors break the node
                 pass
-                
+
         elif parameter.name == "camera_name":
             # Update metadata display when camera selection changes
             try:
-                self._update_camera_metadata_display(modified_parameters_set)
+                self._update_camera_metadata_display()
             except Exception as metadata_error:
                 # Don't let metadata errors break camera selection
                 pass
@@ -548,7 +544,7 @@ class BlenderCameraCapture(ControlNode):
                 if camera_param:
                     instance._update_camera_choices(camera_param, camera_names)
 
-    def after_incoming_connection(self, source_node, source_parameter, target_parameter, modified_parameters_set=None):
+    def after_incoming_connection(self, source_node, source_parameter, target_parameter):
         """Refresh camera list when connections are made."""
         if target_parameter.name == "camera_name":
             # Camera updates now handled by BlenderCameraList node via cameras_input
@@ -557,7 +553,7 @@ class BlenderCameraCapture(ControlNode):
             # Camera list data will flow through this connection automatically
             pass
 
-    def _update_camera_metadata_display(self, modified_parameters_set=None):
+    def _update_camera_metadata_display(self):
         """Update the camera metadata label parameters based on current selection and available data."""
         camera_name = self.get_parameter_value("camera_name") or "Camera"
         cameras_input = self.get_parameter_value("cameras_input")
@@ -641,9 +637,3 @@ class BlenderCameraCapture(ControlNode):
             self.set_parameter_value("dof_info_label", "-") 
             self.set_parameter_value("transform_info_label", "-")
             
-        # Mark all label parameters as modified for UI updates
-        if modified_parameters_set is not None:
-            modified_parameters_set.update([
-                "camera_status_label", "focal_length_label", "sensor_info_label",
-                "dof_info_label", "transform_info_label"
-            ]) 
