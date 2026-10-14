@@ -1,8 +1,9 @@
 import base64
 import json
+from typing import NoReturn
 
-from griptape.artifacts import ErrorArtifact, ImageUrlArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
+from griptape.artifacts import ImageUrlArtifact
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import ControlNode
 from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
 from griptape_nodes.retained_mode.griptape_nodes import logger
@@ -270,7 +271,7 @@ class BlenderCameraCapture(ControlNode):
 
         is_connected, message = self._check_blender_connection()
         if not is_connected:
-            return [ConnectionError(message)]
+            return [NodeError(message)]
 
         # Validate camera selection if cameras_input is connected
         cameras_input = self.get_parameter_value("cameras_input")
@@ -299,6 +300,14 @@ class BlenderCameraCapture(ControlNode):
                     self.parameter_values["camera_name"] = available_cameras[0]
 
         return None
+
+    def _fail(self, message: str, *, response: dict | None = None, cause: Exception | None = None) -> NoReturn:
+        """Show a failure in the status output, then raise it so the node fails."""
+        self.parameter_output_values["status_output"] = f"Error: {message}"
+        error = NodeError(message, response=response)
+        if cause is not None:
+            raise error from cause
+        raise error
 
     async def aprocess(self) -> None:
         await self._process()
@@ -352,58 +361,36 @@ class BlenderCameraCapture(ControlNode):
                     quality=quality,
                 )
             except Exception as e:
-                error_msg = f"Render operation failed or timed out: {str(e)}"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
+                self._fail(f"Render operation failed or timed out: {e}", cause=e)
 
             if not result.get("success"):
-                error_msg = result.get("error", "Unknown error from Blender socket server")
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
+                self._fail(result.get("error") or "The 3D software's socket server returned an error.", response=result)
 
             # Get the actual render result from execute_code response
             render_result = result.get("result", {})
             if not render_result.get("success"):
-                error_msg = render_result.get("error", "Render failed in Blender")
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
+                self._fail(
+                    render_result.get("error") or "The render failed in the 3D software.", response=render_result
+                )
 
             # Get image data from render result
             image_b64 = render_result.get("image")
             if not image_b64:
-                error_msg = "No image data received from Blender socket server"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
+                self._fail("The 3D software's socket server returned no image data.", response=render_result)
 
             # Decode base64 image data
             try:
                 image_data = base64.b64decode(image_b64)
             except Exception as decode_error:
-                error_msg = f"Failed to decode image data: {str(decode_error)}"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
+                self._fail(f"Could not decode the image data from the 3D software: {decode_error}", cause=decode_error)
 
             # Validate image data
             if not image_data or len(image_data) < 100:
-                error_msg = "Received empty or corrupted image data"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
+                self._fail("The image data from the 3D software was empty or corrupted.")
 
-            # Save image
-            try:
-                dest = self._output_file.build_file()
-                saved = dest.write_bytes(image_data)
-            except Exception as save_error:
-                error_msg = f"Failed to save image: {str(save_error)}"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
+            # Save image. A failure here already says which file and why.
+            dest = self._output_file.build_file()
+            saved = dest.write_bytes(image_data)
 
             # Create ImageUrlArtifact and set output
             image_artifact = ImageUrlArtifact(value=saved.location)
@@ -419,11 +406,11 @@ class BlenderCameraCapture(ControlNode):
             status_msg += f"Render time: {render_time:.2f}s, Engine: {engine}"
             self.parameter_output_values["status_output"] = status_msg
 
+        except NodeError:
+            raise
         except Exception as e:
-            error_msg = f"Failed to capture frame: {str(e)}"
-            logger.error(f"BlenderCameraCapture error: {error_msg}")
-            self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-            self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
+            self.parameter_output_values["status_output"] = f"Error: Failed to capture frame: {e}"
+            raise
 
     def after_value_set(self, parameter, value):
         """Update camera choices when cameras_input receives new data."""

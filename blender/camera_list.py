@@ -1,8 +1,8 @@
 import json
 from typing import Any
 
-from griptape.artifacts import ErrorArtifact, ListArtifact, TextArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterMode
+from griptape.artifacts import ListArtifact, TextArtifact
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterMode
 from griptape_nodes.exe_types.node_types import ControlNode
 from griptape_nodes.retained_mode.griptape_nodes import logger
 
@@ -250,6 +250,8 @@ except Exception as e:
                 # Fallback to simple list_cameras if code execution fails
                 return self._fetch_cameras_simple()
 
+        except NodeError:
+            raise
         except Exception as e:
             f"Failed to fetch enhanced camera data: {str(e)}"
             # Fallback to simple method
@@ -282,12 +284,15 @@ except Exception as e:
                     status = "No cameras found in the current Blender scene"
                     return [], status
             else:
-                error_msg = f"Blender socket server error: {result.get('error', 'Unknown error')}"
-                return [], error_msg
+                raise NodeError(
+                    result.get("error") or "The 3D software's socket server returned an error.", response=result
+                )
 
+        except NodeError:
+            raise
         except Exception as e:
-            error_msg = f"Failed to fetch cameras: {str(e)}"
-            return [], error_msg
+            msg = f"Could not list the cameras: {e}"
+            raise NodeError(msg) from e
 
     def _format_camera_info(self, cameras: list[dict]) -> list[dict]:
         """Format camera information for better readability."""
@@ -371,7 +376,7 @@ except Exception as e:
         """Validate that Blender socket server is available before running."""
         is_connected, message = self._check_blender_connection()
         if not is_connected:
-            return [ConnectionError(message)]
+            return [NodeError(message)]
         return None
 
     def validate_before_workflow_run(self) -> list[Exception] | None:
@@ -424,19 +429,16 @@ except Exception as e:
                     logger.debug(f"Camera list propagation skipped: {e}")
 
             else:
-                # No cameras found or error occurred
+                # No cameras in the scene. A failure to ask raises from _fetch_cameras.
                 self.parameter_output_values["camera_count"] = 0
                 self.parameter_output_values["status_output"] = status_msg
+                self.parameter_output_values["cameras_output"] = ListArtifact([])
 
-                if "error" in status_msg.lower() or "failed" in status_msg.lower():
-                    self.parameter_output_values["cameras_output"] = ErrorArtifact(status_msg)
-                else:
-                    # No cameras but no error
-                    self.parameter_output_values["cameras_output"] = ListArtifact([])
-
-        except Exception as e:
-            error_msg = f"Failed to list cameras: {str(e)}"
-            logger.error(f"BlenderCameraList error: {error_msg}")
-            self.parameter_output_values["status_output"] = f"Error: {error_msg}"
+        except NodeError as e:
+            self.parameter_output_values["status_output"] = f"Error: {e}"
             self.parameter_output_values["camera_count"] = 0
-            self.parameter_output_values["cameras_output"] = ErrorArtifact(error_msg)
+            raise
+        except Exception as e:
+            self.parameter_output_values["status_output"] = f"Error: Failed to list cameras: {e}"
+            self.parameter_output_values["camera_count"] = 0
+            raise
