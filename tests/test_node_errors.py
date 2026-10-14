@@ -1,9 +1,8 @@
 """Tests for how the camera nodes report a failure.
 
-The socket client never raises: it returns `{"success": False, "error": ...}`. The nodes used to turn
-that into status text and an ErrorArtifact and carry on, so the run ended without a failure. These
-tests answer at the socket's lowest level, so the real client code runs, and check that each failure
-now fails the node with a NodeError.
+The socket client never raises: it returns `{"success": False, "error": ...}`. These tests answer at
+the socket's lowest level, so the real client code runs, and check that each failure fails the node
+with a NodeError.
 """
 
 from __future__ import annotations
@@ -119,7 +118,7 @@ async def test_undecodable_image_data_fails_the_node_and_keeps_the_cause(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_an_unexpected_error_is_raised_as_it_is(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_render_exception_fails_the_node_and_keeps_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:
     node = _capture(monkeypatch, {"success": True, "result": {"success": True}})
 
     def broken(*_: Any, **__: Any) -> dict[str, Any]:
@@ -132,6 +131,24 @@ async def test_an_unexpected_error_is_raised_as_it_is(monkeypatch: pytest.Monkey
 
     assert isinstance(raised.value, NodeError)
     assert isinstance(raised.value.__cause__, KeyError)
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_after_the_render_is_raised_as_it_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    image = base64.b64encode(b"x" * 200).decode()
+    node = _capture(monkeypatch, {"success": True, "result": {"success": True, "image": image}})
+
+    def disk_full() -> Any:
+        message = "disk full"
+        raise OSError(message)
+
+    monkeypatch.setattr(node._output_file, "build_file", disk_full)
+
+    with pytest.raises(OSError, match="disk full") as raised:
+        await node.aprocess()
+
+    assert not isinstance(raised.value, NodeError)
+    assert node.parameter_output_values["status_output"] == "Error: Failed to capture frame: disk full"
 
 
 @pytest.mark.parametrize(
