@@ -5,7 +5,7 @@
     "metadata": {
         "author": "Griptape",
         "description": "Griptape Nodes for interacting with Blender via socket communication for real-time camera capture and scene interaction.",
-        "library_version": "0.2.0",
+        "library_version": "0.3.0",
         "engine_version": "0.104.0",
         "tags": [
             "Griptape",
