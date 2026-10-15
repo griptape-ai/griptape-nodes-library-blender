@@ -364,29 +364,27 @@ class BlenderCameraCapture(ControlNode):
                 self._fail(f"Render operation failed or timed out: {e}", cause=e)
 
             if not result.get("success"):
-                self._fail(result.get("error") or "The 3D software's socket server returned an error.", response=result)
+                self._fail(result.get("error") or "Blender's socket server returned an error.", response=result)
 
             # Get the actual render result from execute_code response
             render_result = result.get("result", {})
             if not render_result.get("success"):
-                self._fail(
-                    render_result.get("error") or "The render failed in the 3D software.", response=render_result
-                )
+                self._fail(render_result.get("error") or "The render failed in Blender.", response=render_result)
 
             # Get image data from render result
             image_b64 = render_result.get("image")
             if not image_b64:
-                self._fail("The 3D software's socket server returned no image data.", response=render_result)
+                self._fail("Blender's socket server returned no image data.", response=render_result)
 
             # Decode base64 image data
             try:
                 image_data = base64.b64decode(image_b64)
             except Exception as decode_error:
-                self._fail(f"Could not decode the image data from the 3D software: {decode_error}", cause=decode_error)
+                self._fail(f"Could not decode the image data from Blender: {decode_error}", cause=decode_error)
 
             # Validate image data
             if not image_data or len(image_data) < 100:
-                self._fail("The image data from the 3D software was empty or corrupted.")
+                self._fail("The image data from Blender was empty or corrupted.")
 
             # Save image. A failure here already says which file and why.
             dest = self._output_file.build_file()

@@ -284,9 +284,7 @@ except Exception as e:
                     status = "No cameras found in the current Blender scene"
                     return [], status
             else:
-                raise NodeError(
-                    result.get("error") or "The 3D software's socket server returned an error.", response=result
-                )
+                raise NodeError(result.get("error") or "Blender's socket server returned an error.", response=result)
 
         except NodeError:
             raise

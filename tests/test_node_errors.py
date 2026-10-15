@@ -64,9 +64,7 @@ def _capture(monkeypatch: pytest.MonkeyPatch, render: dict[str, Any]) -> camera_
             "Cannot connect to the server at 127.0.0.1:8765",
             id="socket-error",
         ),
-        pytest.param(
-            {"success": False}, "The 3D software's socket server returned an error.", id="socket-error-no-reason"
-        ),
+        pytest.param({"success": False}, "Blender's socket server returned an error.", id="socket-error-no-reason"),
         pytest.param(
             {"success": True, "result": {"success": False, "error": "Camera 'Cam' was not found"}},
             "Camera 'Cam' was not found",
@@ -74,12 +72,12 @@ def _capture(monkeypatch: pytest.MonkeyPatch, render: dict[str, Any]) -> camera_
         ),
         pytest.param(
             {"success": True, "result": {"success": True}},
-            "The 3D software's socket server returned no image data.",
+            "Blender's socket server returned no image data.",
             id="no-image",
         ),
         pytest.param(
             {"success": True, "result": {"success": True, "image": base64.b64encode(b"tiny").decode()}},
-            "The image data from the 3D software was empty or corrupted.",
+            "The image data from Blender was empty or corrupted.",
             id="corrupted",
         ),
     ],
@@ -111,7 +109,7 @@ async def test_the_servers_response_is_attached_to_a_failed_capture(monkeypatch:
 async def test_undecodable_image_data_fails_the_node_and_keeps_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:
     node = _capture(monkeypatch, {"success": True, "result": {"success": True, "image": "abc"}})
 
-    with pytest.raises(NodeError, match="Could not decode the image data from the 3D software") as raised:
+    with pytest.raises(NodeError, match="Could not decode the image data from Blender") as raised:
         await node.aprocess()
 
     assert raised.value.__cause__ is not None
