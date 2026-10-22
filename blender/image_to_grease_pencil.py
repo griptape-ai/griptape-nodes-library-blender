@@ -159,7 +159,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             ParameterBool(
                 name="fill",
                 display_name="Fill",
-                tooltip="Fill the traced shapes. The tracer outlines each line, so turn this off to see only outlines.",
+                tooltip="Fill the traced shapes. The tracer outlines each line, so turn this off to see only the outlines.",
                 default_value=True,
             )
         self.add_node_element(look_group)
@@ -403,23 +403,33 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         if result.get("target_blend"):
             placed = result["target_blend"]
             lines.append(f"Added to {target_blend} and saved it.")
-        if self.get_parameter_value("send_to_open_scene"):
-            placed = send_to_open_scene(
-                blend_path,
-                result["objects"],
-                result["layers"],
-                placement,
-                port=int(self.get_parameter_value("mcp_port")),
-            )
-            lines.append("Added to the scene open in Blender.")
-
         self.parameter_output_values["preview"] = previews[0] if previews else None
         self.parameter_output_values["previews"] = previews
         self.parameter_output_values["blend_path"] = blend_path
-        self.parameter_output_values["object_name_output"] = ", ".join(placed["objects"])
-        self.parameter_output_values["layer_name_output"] = ", ".join(placed["layers"])
+        self._set_placed(placed)
+
+        if self.get_parameter_value("send_to_open_scene"):
+            try:
+                placed = send_to_open_scene(
+                    blend_path,
+                    result["objects"],
+                    result["layers"],
+                    placement,
+                    port=int(self.get_parameter_value("mcp_port")),
+                )
+            except blender_mcp_client.BlenderMCPError as e:
+                # The previews and .blend outputs stay set, so the trace is still usable.
+                msg = f"Traced, but could not send it to the open Blender. Turn off 'Send to Open Scene' to skip.\n{e}"
+                raise blender_mcp_client.BlenderMCPError(msg) from e
+            self._set_placed(placed)
+            lines.append("Added to the scene open in Blender.")
+
         lines.append(f"Object: {', '.join(placed['objects'])}. Layers: {', '.join(placed['layers'])}.")
         return "\n".join(lines)
+
+    def _set_placed(self, placed: dict[str, Any]) -> None:
+        self.parameter_output_values["object_name_output"] = ", ".join(placed["objects"])
+        self.parameter_output_values["layer_name_output"] = ", ".join(placed["layers"])
 
     def _save_preview(self, path: Path) -> ImageUrlArtifact:
         destination = ProjectFileDestination.from_situation(

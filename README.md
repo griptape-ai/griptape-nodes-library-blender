@@ -161,7 +161,7 @@ Lists all cameras in the current Blender scene with comprehensive metadata.
 ### Image to Grease Pencil Node
 
 Traces an image, or a list of images, into a Grease Pencil drawing. Tracing runs in a background Blender, so it works
-with no Blender open. It does not use the socket server.
+with no Blender open; turn off `Send To Open Scene` in that case. It does not use the socket server.
 
 **Modes:**
 - **Animated** - one object, one keyframe per image (`Start Frame`, `Frame Step`)
@@ -182,7 +182,8 @@ names.
   Preferences > System > Allow Online Access, and start its server (port 9876). The node talks to the add-on's socket
   directly. No AI agent is involved.
 
-The tracer outlines each line rather than following its center, so leave `Fill` on to see solid lines. Blender is
+The tracer outlines each line rather than following its center. With `Fill` on the lines are solid; with it off you see
+the outlines, drawn at `Thickness`. Blender is
 found from `Blender Path`, then `$BLENDER_PATH`, then `blender` on `PATH`, then `/Applications/Blender.app`. Tested
 with Blender 5.3.
 

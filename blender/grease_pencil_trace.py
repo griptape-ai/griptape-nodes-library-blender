@@ -24,7 +24,6 @@ RUN_TIMEOUT_SECONDS = 600
 MODE_ANIMATED = "animated"
 MODE_SEPARATE = "separate"
 TURN_POLICIES = ["MINORITY", "MAJORITY", "FOREGROUND", "BACKGROUND", "LEFT", "RIGHT", "RANDOM"]
-STROKE_TYPES = ["POLY", "BEZIER"]
 
 
 @dataclass
@@ -96,7 +95,7 @@ def find_blender(setting: str = "") -> str:
     if chosen:
         program = _blender_program(chosen)
         if program is None:
-            msg = f"Blender was not found at {chosen}. Choose the Blender program, or clear 'Blender' to find it automatically."
+            msg = f"Blender was not found at {chosen}. Choose the Blender program, or clear 'Blender Path' to find it automatically."
             raise FileNotFoundError(msg)
         return str(program)
     for candidate in (os.environ.get("BLENDER_PATH", ""), shutil.which("blender") or "", MAC_BLENDER):
@@ -104,7 +103,7 @@ def find_blender(setting: str = "") -> str:
         if program is not None:
             return str(program)
     msg = (
-        "Blender was not found. Set 'Blender' to the Blender program (on a Mac, /Applications/Blender.app), "
+        "Blender was not found. Set 'Blender Path' to the Blender program (on a Mac, /Applications/Blender.app), "
         "or set the BLENDER_PATH environment variable."
     )
     raise FileNotFoundError(msg)

@@ -26,7 +26,15 @@ def execute(code: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> di
     """Run `code` in the open Blender and return the dict it assigned to `result`."""
     request = json.dumps({"type": "execute", "code": code, "strict_json": True}).encode("utf-8") + b"\0"
     try:
-        with socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_SECONDS) as sock:
+        sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_SECONDS)
+    except (OSError, socket.gaierror) as e:
+        msg = (
+            f"Could not reach Blender at {host}:{port}. In Blender, install the MCP add-on from Blender Lab, turn on "
+            "Preferences > System > Allow Online Access, and start the MCP server."
+        )
+        raise BlenderMCPError(msg) from e
+    try:
+        with sock:
             sock.settimeout(RESPONSE_TIMEOUT_SECONDS)
             sock.sendall(request)
             buffer = bytearray()
@@ -35,12 +43,6 @@ def execute(code: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> di
                 if not chunk:
                     break
                 buffer.extend(chunk)
-    except (ConnectionRefusedError, socket.gaierror) as e:
-        msg = (
-            f"Could not reach Blender at {host}:{port}. In Blender, install the MCP add-on from Blender Lab, turn on "
-            "Preferences > System > Allow Online Access, and start the MCP server."
-        )
-        raise BlenderMCPError(msg) from e
     except TimeoutError as e:
         msg = f"Blender at {host}:{port} did not answer within {RESPONSE_TIMEOUT_SECONDS} seconds."
         raise BlenderMCPError(msg) from e

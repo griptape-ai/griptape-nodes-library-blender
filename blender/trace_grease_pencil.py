@@ -167,6 +167,10 @@ def _build(job: dict) -> list[dict]:
         source = traced.data.layers[0].frames[0].drawing
         material_map = [0] * max(1, len(traced.data.materials))
         copy_drawing(source, drawing, _placement(size, job["size"]), material_map)
+        # The tracer hides its strokes and shows only fills; show them so Thickness and Fill off work.
+        hidden = drawing.attributes.get("hide_stroke")
+        if hidden is not None:
+            drawing.attributes.remove(hidden)
         _set_radius(drawing, job["thickness"])
 
         remove_object(traced)
