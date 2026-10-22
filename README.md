@@ -167,13 +167,13 @@ with no Blender open; turn off `Send To Open Scene` in that case. It does not us
 - **Animated** - one object, one keyframe per image (`Start Frame`, `Frame Step`)
 - **Separate** - one object per image (`Drawing_001`, `Drawing_002`, ...)
 
-**Settings:** threshold, invert and turn policy for the trace. Max resolution, stroke type, simplify and smooth for
-cleanup. Thickness, color and fill for the look. Object and layer name, size, location (empty for the 3D cursor),
+**Settings:** object name. Threshold, invert and turn policy for the trace. Max resolution, stroke type, simplify and
+smooth for cleanup. Thickness, color and fill for the look. Layer name, size, location (empty for the 3D cursor),
 collection (empty for the active one), and replace for placement. Set `Target Object` to an existing Grease Pencil
 object to add the trace to it as a new layer. In Separate mode each image gets its own layer.
 
 **Outputs:** a preview of each image rendered on white, the `.blend` holding the drawing, and the object and layer
-names.
+names. Each run overwrites the node's previews.
 
 **Where the drawing goes:**
 - `Target Blend` - adds it to that `.blend` file and saves the file

@@ -1,3 +1,4 @@
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
 from griptape_nodes.exe_types.param_types.parameter_string import ParameterString
 from griptape_nodes.files.file import File
 from griptape_nodes.files.project_file import ProjectFileDestination
+from griptape_nodes.retained_mode.events.os_events import ExistingFilePolicy
 from griptape_nodes.traits.color_picker import ColorPicker
 from griptape_nodes.traits.options import Options
 
@@ -72,6 +74,14 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 default_value=next(iter(MODE_LABELS)),
                 traits={Options(choices=list(MODE_LABELS))},
                 allow_output=False,
+            )
+        )
+        self.add_parameter(
+            ParameterString(
+                name="object_name",
+                display_name="Object Name",
+                tooltip="Name of the Grease Pencil object.",
+                default_value="Drawing",
             )
         )
 
@@ -165,12 +175,6 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         self.add_node_element(look_group)
 
         with ParameterGroup(name="Placement", collapsed=True) as placement_group:
-            ParameterString(
-                name="object_name",
-                display_name="Object Name",
-                tooltip="Name of the Grease Pencil object.",
-                default_value="Drawing",
-            )
             ParameterString(
                 name="layer_name",
                 display_name="Layer Name",
@@ -432,8 +436,13 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         self.parameter_output_values["layer_name_output"] = ", ".join(placed["layers"])
 
     def _save_preview(self, path: Path) -> ImageUrlArtifact:
-        destination = ProjectFileDestination.from_situation(
-            f"grease_pencil_{path.name}", ProjectFileParameter.DEFAULT_SITUATION, node_name=self.name
+        # Each run overwrites this node's previews, so re-tracing doesn't pile up files. The node name is in the
+        # filename because the project's template may leave it out, and two nodes would then share previews.
+        # `_index` is bound because only CREATE_NEW fills it, and resolve() fails while it's required and empty.
+        node = re.sub(r"[^A-Za-z0-9_-]+", "_", self.name).strip("_")
+        situated = ProjectFileDestination.from_situation(
+            f"{node}_grease_pencil_{path.name}", ProjectFileParameter.DEFAULT_SITUATION, _index=1
         )
+        destination = ProjectFileDestination(situated.resolve(), existing_file_policy=ExistingFilePolicy.OVERWRITE)
         saved = destination.write_bytes(path.read_bytes())
         return ImageUrlArtifact(value=saved.location)
