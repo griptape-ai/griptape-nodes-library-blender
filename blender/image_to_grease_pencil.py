@@ -212,7 +212,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             ParameterBool(
                 name="replace",
                 display_name="Replace Existing",
-                tooltip="Replace an object or layer with the same name from an earlier run, rather than adding a copy.",
+                tooltip="Replace the object or layer this node made on an earlier run, rather than adding a copy. Objects and layers you made yourself are never replaced.",
                 default_value=True,
             )
             ParameterInt(

@@ -22,6 +22,10 @@ _COMPONENTS = {
 }
 _DTYPES = {"FLOAT": np.float32, "INT": np.int32, "INT8": np.int32, "BOOLEAN": bool}
 _POSITION_ATTRIBUTES = ("position", "handle_left", "handle_right")
+# Replace Existing only removes what the node made: objects carrying TRACED_TAG, and the layers a target object's data
+# lists under TRACED_LAYERS (layers can't hold custom properties).
+TRACED_TAG = "griptape_traced"
+TRACED_LAYERS = "griptape_traced_layers"
 
 
 def _read_attribute(attribute) -> np.ndarray:
@@ -103,6 +107,7 @@ def copy_layer(source_object, source_layer, target_object, layer_name: str, matr
     """
     material_map = _material_slots(source_object.data.materials, target_object.data)
     layer = target_object.data.layers.new(layer_name)
+    layer.use_lights = source_layer.use_lights
     for frame in source_layer.frames:
         copy_drawing(frame.drawing, layer.frames.new(frame.frame_number).drawing, matrix, material_map)
     return layer
@@ -146,7 +151,8 @@ def import_traced(  # noqa: PLR0913
     With no `target_object`, each object is added to `collection` (the active collection when empty). With a
     `target_object`, each traced layer is copied onto that Grease Pencil object instead, keeping the layer's name.
     The drawing lands at `location`, or at the 3D cursor when `location` is None. `replace` removes an earlier
-    object or layer with the same name first, so a re-run swaps it out rather than adding a copy.
+    object or layer with the same name, so a re-run swaps it out rather than adding a copy. It only removes what an
+    earlier trace made, and only once the new trace has loaded.
     """
     scene = bpy.context.scene
     origin = Vector(location) if location is not None else scene.cursor.location.copy()
@@ -157,35 +163,43 @@ def import_traced(  # noqa: PLR0913
         if target is None or target.type != "GREASEPENCIL":
             msg = f"There is no Grease Pencil object named '{target_object}' in the open file."
             raise ValueError(msg)
-        if replace:
-            for name in layer_names:
-                existing = target.data.layers.get(name)
-                if existing is not None:
-                    target.data.layers.remove(existing)
-    elif replace:
-        for name in object_names:
-            existing = bpy.data.objects.get(name)
-            if existing is not None and existing.type == "GREASEPENCIL":
-                remove_object(existing)
 
     with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
-        data_to.objects = [name for name in object_names if name in data_from.objects]
-    loaded = [obj for obj in data_to.objects if obj is not None]
+        names = [name for name in object_names if name in data_from.objects]
+        data_to.objects = list(names)
+    named = [(name, obj) for name, obj in zip(names, data_to.objects, strict=True) if obj is not None]
+    loaded = [obj for _, obj in named]
     if not loaded:
         msg = f"No traced objects were found in {blend_path}."
         raise ValueError(msg)
 
     if target is None:
+        if replace:
+            # A loaded object whose name was taken comes in with a numeric suffix. Once the earlier traces are gone
+            # it takes the name back; an object the node didn't make is left alone and the trace keeps the suffix.
+            for name, obj in named:
+                for existing in list(bpy.data.objects):
+                    if existing not in loaded and existing.get(TRACED_TAG) and _base_name(existing.name) == name:
+                        remove_object(existing)
+                if bpy.data.objects.get(name) is None:
+                    obj.name = name
         destination = _collection(scene, collection)
         for obj in loaded:
             destination.objects.link(obj)
             obj.location = origin + obj.location
         return {"objects": [obj.name for obj in loaded], "layers": list(layer_names), "target_object": ""}
 
+    traced_layers = set(target.data.get(TRACED_LAYERS, []))
+    if replace:
+        for existing in list(target.data.layers):
+            if existing.name in traced_layers and _base_name(existing.name) in layer_names:
+                traced_layers.discard(existing.name)
+                target.data.layers.remove(existing)
     layers = []
     for obj in loaded:
         matrix = target.matrix_world.inverted() @ Matrix.Translation(origin) @ obj.matrix_basis
         for source_layer in list(obj.data.layers):
             layers.append(copy_layer(obj, source_layer, target, source_layer.name, matrix).name)
         remove_object(obj)
+    target.data[TRACED_LAYERS] = sorted(traced_layers | set(layers))
     return {"objects": [target.name], "layers": layers, "target_object": target.name}
