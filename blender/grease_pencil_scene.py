@@ -22,9 +22,10 @@ _COMPONENTS = {
 }
 _DTYPES = {"FLOAT": np.float32, "INT": np.int32, "INT8": np.int32, "BOOLEAN": bool}
 _POSITION_ATTRIBUTES = ("position", "handle_left", "handle_right")
-# Replace Existing only removes what the node made: objects carrying TRACED_TAG, and the layers a target object's data
-# lists under TRACED_LAYERS (layers can't hold custom properties).
-TRACED_TAG = "griptape_traced"
+# Replace Existing only removes what the node made, recorded by name: objects in the scene's TRACED_OBJECTS, layers
+# in the target object data's TRACED_LAYERS. Names rather than a tag on the object, so a duplicate the user makes of
+# a traced object isn't taken for one (and layers can't hold custom properties).
+TRACED_OBJECTS = "griptape_traced_objects"
 TRACED_LAYERS = "griptape_traced_layers"
 
 
@@ -98,6 +99,16 @@ def _material_slots(source_materials, target_data) -> list[int]:
             index = len(target_data.materials) - 1
         slots.append(index)
     return slots
+
+
+def _earlier_trace(name: str, requested: str) -> bool:
+    """Whether `name` is `requested` or a copy Blender suffixed because `requested` was taken."""
+    return name == requested or _base_name(name) == requested
+
+
+def _recorded(owner, key: str, existing) -> set[str]:
+    """Names recorded on `owner` under `key` that still exist in `existing`."""
+    return {name for name in owner.get(key, []) if name in existing}
 
 
 def copy_layer(source_object, source_layer, target_object, layer_name: str, matrix: Matrix):
@@ -174,25 +185,30 @@ def import_traced(  # noqa: PLR0913
         raise ValueError(msg)
 
     if target is None:
+        traced_objects = _recorded(scene, TRACED_OBJECTS, bpy.data.objects)
         if replace:
-            # A loaded object whose name was taken comes in with a numeric suffix. Once the earlier traces are gone
-            # it takes the name back; an object the node didn't make is left alone and the trace keeps the suffix.
+            # A loaded object whose name was taken comes in with a numeric suffix. It takes the name back, or the
+            # name of the earlier trace it replaces, so its name stays the same from run to run.
             for name, obj in named:
-                for existing in list(bpy.data.objects):
-                    if existing not in loaded and existing.get(TRACED_TAG) and _base_name(existing.name) == name:
-                        remove_object(existing)
-                if bpy.data.objects.get(name) is None:
-                    obj.name = name
+                earlier = sorted(n for n in traced_objects if _earlier_trace(n, name) and bpy.data.objects[n] != obj)
+                for existing in earlier:
+                    traced_objects.discard(existing)
+                    remove_object(bpy.data.objects[existing])
+                for wanted in [name, *earlier]:
+                    if bpy.data.objects.get(wanted) is None:
+                        obj.name = wanted
+                        break
         destination = _collection(scene, collection)
         for obj in loaded:
             destination.objects.link(obj)
             obj.location = origin + obj.location
+        scene[TRACED_OBJECTS] = sorted(traced_objects | {obj.name for obj in loaded})
         return {"objects": [obj.name for obj in loaded], "layers": list(layer_names), "target_object": ""}
 
-    traced_layers = set(target.data.get(TRACED_LAYERS, []))
+    traced_layers = _recorded(target.data, TRACED_LAYERS, target.data.layers)
     if replace:
         for existing in list(target.data.layers):
-            if existing.name in traced_layers and _base_name(existing.name) in layer_names:
+            if existing.name in traced_layers and any(_earlier_trace(existing.name, name) for name in layer_names):
                 traced_layers.discard(existing.name)
                 target.data.layers.remove(existing)
     layers = []

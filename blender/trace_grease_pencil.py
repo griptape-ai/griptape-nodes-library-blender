@@ -17,7 +17,7 @@ from mathutils import Matrix
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from grease_pencil_scene import TRACED_TAG, copy_drawing, import_traced, remove_object  # noqa: E402
+from grease_pencil_scene import copy_drawing, import_traced, remove_object  # noqa: E402
 
 SUCCESS_MARKER = "TRACE_OK"
 PREVIEW_MARGIN = 1.05
@@ -158,7 +158,6 @@ def _build(job: dict) -> list[dict]:
             data = bpy.data.grease_pencils.new(object_name)
             data.materials.append(material)
             obj = bpy.data.objects.new(object_name, data)
-            obj[TRACED_TAG] = True
             scene.collection.objects.link(obj)
         layer = obj.data.layers.get(layer_name)
         if layer is None:
