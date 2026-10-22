@@ -28,6 +28,7 @@ from griptape_nodes.files.project_file import ProjectFileDestination
 from griptape_nodes.retained_mode.events.os_events import ExistingFilePolicy
 from griptape_nodes.traits.color_picker import ColorPicker
 from griptape_nodes.traits.options import Options
+from preview_sheets import animated_gif, contact_sheet
 
 MODE_LABELS = {"Animated (one object, a keyframe per image)": MODE_ANIMATED, "Separate (one per image)": MODE_SEPARATE}
 STROKE_LABELS = {"Poly (simplify and smooth apply)": "POLY", "Bezier (as traced)": "BEZIER"}
@@ -286,6 +287,28 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             )
         )
         self.add_parameter(
+            Parameter(
+                name="contact_sheet",
+                display_name="Contact Sheet",
+                type="ImageUrlArtifact",
+                output_type="ImageUrlArtifact",
+                allowed_modes={ParameterMode.OUTPUT},
+                tooltip="Every preview in one numbered grid, to check the trace across all images. Empty for one image.",
+                ui_options={"is_full_width": True},
+            )
+        )
+        self.add_parameter(
+            Parameter(
+                name="animation",
+                display_name="Animation",
+                type="ImageUrlArtifact",
+                output_type="ImageUrlArtifact",
+                allowed_modes={ParameterMode.OUTPUT},
+                tooltip="An animated GIF of the previews at Blender's default 24 fps. Animated mode with several images only.",
+                ui_options={"is_full_width": True},
+            )
+        )
+        self.add_parameter(
             ParameterString(
                 name="blend_path",
                 display_name="Blend Path",
@@ -399,7 +422,17 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             )
             result = run_trace(blender, job)
             blend = self._blend_file.build_file().write_bytes(traced_blend.read_bytes())
-            previews = [self._save_preview(Path(preview)) for preview in result["previews"]]
+            preview_files = [Path(preview) for preview in result["previews"]]
+            previews = [self._save_preview(path.name, path.read_bytes()) for path in preview_files]
+            self._remove_extra_previews(len(previews))
+            sheet = gif = None
+            if len(preview_files) > 1:
+                sheet = self._save_preview("contact_sheet.png", contact_sheet(preview_files))
+                if settings.mode == MODE_ANIMATED:
+                    gif = self._save_preview("animation.gif", animated_gif(preview_files, settings.frame_step))
+            for filename, saved in (("contact_sheet.png", sheet), ("animation.gif", gif)):
+                if saved is None:
+                    self._preview_path(filename).unlink(missing_ok=True)
 
         blend_path = blend.resolve()
         placed: dict[str, Any] = {"objects": result["objects"], "layers": result["layers"]}
@@ -409,6 +442,8 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             lines.append(f"Added to {target_blend} and saved it.")
         self.parameter_output_values["preview"] = previews[0] if previews else None
         self.parameter_output_values["previews"] = previews
+        self.parameter_output_values["contact_sheet"] = sheet
+        self.parameter_output_values["animation"] = gif
         self.parameter_output_values["blend_path"] = blend_path
         self._set_placed(placed)
 
@@ -435,14 +470,25 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         self.parameter_output_values["object_name_output"] = ", ".join(placed["objects"])
         self.parameter_output_values["layer_name_output"] = ", ".join(placed["layers"])
 
-    def _save_preview(self, path: Path) -> ImageUrlArtifact:
+    def _preview_path(self, filename: str) -> Path:
         # Each run overwrites this node's previews, so re-tracing doesn't pile up files. The node name is in the
         # filename because the project's template may leave it out, and two nodes would then share previews.
         # `_index` is bound because only CREATE_NEW fills it, and resolve() fails while it's required and empty.
         node = re.sub(r"[^A-Za-z0-9_-]+", "_", self.name).strip("_")
         situated = ProjectFileDestination.from_situation(
-            f"{node}_grease_pencil_{path.name}", ProjectFileParameter.DEFAULT_SITUATION, _index=1
+            f"{node}_grease_pencil_{filename}", ProjectFileParameter.DEFAULT_SITUATION, _index=1
         )
-        destination = ProjectFileDestination(situated.resolve(), existing_file_policy=ExistingFilePolicy.OVERWRITE)
-        saved = destination.write_bytes(path.read_bytes())
-        return ImageUrlArtifact(value=saved.location)
+        return Path(situated.resolve())
+
+    def _save_preview(self, filename: str, content: bytes) -> ImageUrlArtifact:
+        destination = ProjectFileDestination(
+            str(self._preview_path(filename)), existing_file_policy=ExistingFilePolicy.OVERWRITE
+        )
+        return ImageUrlArtifact(value=destination.write_bytes(content).location)
+
+    def _remove_extra_previews(self, count: int) -> None:
+        """Delete previews an earlier run left past the first `count`, such as image 5's after a 3-image run."""
+        index = count + 1
+        while (path := self._preview_path(f"preview_{index:03d}.png")).is_file():
+            path.unlink()
+            index += 1
