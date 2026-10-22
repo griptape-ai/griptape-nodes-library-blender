@@ -34,6 +34,11 @@ This package provides Griptape nodes for capturing camera views from Blender sce
 - `blender/socket_client.py` - Socket client utilities for Griptape nodes  
 - `blender/camera_capture.py` - Camera capture node for Griptape workflows
 - `blender/camera_list.py` - Node to list available cameras in Blender scene
+- `blender/image_to_grease_pencil.py` - Node that traces images into Grease Pencil
+- `blender/grease_pencil_trace.py` - Runs the trace in a background Blender and sends the result to an open one
+- `blender/trace_grease_pencil.py` - Script the background Blender runs to trace and render previews
+- `blender/grease_pencil_scene.py` - Places traced drawings in a scene, in the background or open Blender
+- `blender/blender_mcp_client.py` - Client for the Blender Lab MCP add-on's socket
 
 ## Quick Setup
 
@@ -152,6 +157,34 @@ Lists all cameras in the current Blender scene with comprehensive metadata.
 - **Depth of Field:** Focus distance, aperture f-stop settings
 - **Composition:** Camera shift for perspective correction
 - **Matrix Data:** Full 4x4 transformation matrix for precise positioning
+
+### Image to Grease Pencil Node
+
+Traces an image, or a list of images, into a Grease Pencil drawing. Tracing runs in a background Blender, so it works
+with no Blender open. It does not use the socket server.
+
+**Modes:**
+- **Animated** - one object, one keyframe per image (`Start Frame`, `Frame Step`)
+- **Separate** - one object per image (`Drawing_001`, `Drawing_002`, ...)
+
+**Settings:** threshold, invert and turn policy for the trace. Max resolution, stroke type, simplify and smooth for
+cleanup. Thickness, color and fill for the look. Object and layer name, size, location (empty for the 3D cursor),
+collection (empty for the active one), and replace for placement. Set `Target Object` to an existing Grease Pencil
+object to add the trace to it as a new layer. In Separate mode each image gets its own layer.
+
+**Outputs:** a preview of each image rendered on white, the `.blend` holding the drawing, and the object and layer
+names.
+
+**Where the drawing goes:**
+- `Target Blend` - adds it to that `.blend` file and saves the file
+- `Send To Open Scene` - adds it to the scene open in Blender, through the official
+  [Blender Lab MCP add-on](https://www.blender.org/lab/mcp-server/). Install the add-on, turn on
+  Preferences > System > Allow Online Access, and start its server (port 9876). The node talks to the add-on's socket
+  directly. No AI agent is involved.
+
+The tracer outlines each line rather than following its center, so leave `Fill` on to see solid lines. Blender is
+found from `Blender Path`, then `$BLENDER_PATH`, then `blender` on `PATH`, then `/Applications/Blender.app`. Tested
+with Blender 5.3.
 
 ## Workflow Integration
 
