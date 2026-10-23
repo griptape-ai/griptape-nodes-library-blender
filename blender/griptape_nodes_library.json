@@ -5,7 +5,7 @@
     "metadata": {
         "author": "Griptape",
         "description": "Griptape Nodes for interacting with Blender via socket communication for real-time camera capture and scene interaction.",
-        "library_version": "0.2.0",
+        "library_version": "0.3.0",
         "engine_version": "0.77.4",
         "tags": [
             "Griptape",
@@ -46,6 +46,15 @@
                 "category": "Blender",
                 "description": "Lists all available cameras in the current Blender scene.",
                 "display_name": "Blender Camera List"
+            }
+        },
+        {
+            "class_name": "BlenderImageToGreasePencil",
+            "file_path": "image_to_grease_pencil.py",
+            "metadata": {
+                "category": "Blender",
+                "description": "Traces images into a Grease Pencil drawing with a background Blender, previews it, and can send it to the scene open in Blender.",
+                "display_name": "Image to Grease Pencil"
             }
         }
     ]
