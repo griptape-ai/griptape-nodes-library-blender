@@ -118,6 +118,7 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
                 display_name="Camera Used",
                 tooltip="The camera the plane is on.",
                 allow_input=False,
+                placeholder_text="Appears after a run",
                 allow_property=False,
             )
         )
@@ -127,6 +128,7 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
                 display_name="Plane",
                 tooltip="The plane's name in Blender.",
                 allow_input=False,
+                placeholder_text="Appears after a run",
                 allow_property=False,
             )
         )
@@ -136,6 +138,7 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
                 display_name="File",
                 tooltip="The file the plane shows.",
                 allow_input=False,
+                placeholder_text="Appears after a run",
                 allow_property=False,
             )
         )
