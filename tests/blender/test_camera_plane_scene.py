@@ -17,6 +17,7 @@ import bpy
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("cps", ROOT / "blender" / "camera_plane_scene.py")
+assert spec is not None and spec.loader is not None
 cps = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cps)
 

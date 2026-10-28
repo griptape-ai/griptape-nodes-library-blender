@@ -239,7 +239,11 @@ def get_camera_plane(camera: str = "", scene: str = "", export_path: str = "") -
         raise ValueError(msg)
     plane = planes[0]
     bpy.context.view_layer.update()  # A plane parented a moment ago has no world matrix yet.
-    image = _plane_media(plane).image
+    media = _plane_media(plane)
+    if media is None:
+        msg = f"The plane '{plane.name}' no longer shows an image."
+        raise ValueError(msg)
+    image = media.image
     path = bpy.path.abspath(image.filepath) if image.filepath else ""
     exported = False
     if image.packed_file or image.source == "GENERATED" or not path:
