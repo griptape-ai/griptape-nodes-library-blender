@@ -254,7 +254,9 @@ def get_camera_plane(camera: str = "", scene: str = "", export_path: str = "") -
             raise ValueError(msg)
         image.save(filepath=export_path)
         path, exported = export_path, True
-    center = cam.matrix_world.inverted() @ plane.matrix_world @ (sum((v.co for v in plane.data.vertices), Vector()) / 4)
+    # The middle of the bounding box, so a mesh with any number of vertices is measured the same way.
+    middle = sum((Vector(corner) for corner in plane.bound_box), Vector()) / 8
+    center = cam.matrix_world.inverted() @ plane.matrix_world @ middle
     return {
         "scene": target_scene.name,
         "camera": cam.name,

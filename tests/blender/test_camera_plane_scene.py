@@ -202,6 +202,27 @@ def test_ortho_get_and_errors():
     cps.add_camera_plane(str(quad), distance=4, fit="fit", name="Mine")
     check(cps.get_camera_plane()["plane"] == "Mine", "a plane the node made is preferred")
 
+    # A hand-made mesh with more than four vertices, none of them at its origin: a 3x3 grid of points at 5 units.
+    grid = [(x, y, -5) for y in (-1, 0, 1) for x in (-1, 0, 1)]
+    faces = [
+        (row * 3 + col, row * 3 + col + 1, (row + 1) * 3 + col + 1, (row + 1) * 3 + col)
+        for row in range(2)
+        for col in range(2)
+    ]
+    grid_mesh = bpy.data.meshes.new("Grid")
+    grid_mesh.from_pydata(grid, [], faces)
+    grid_mesh.materials.append(material)
+    grid_plane = bpy.data.objects.new("Grid", grid_mesh)
+    scene.collection.objects.link(grid_plane)
+    grid_plane.parent = camera
+    for other in list(camera.children):
+        if other != grid_plane:
+            cps._remove_plane(other)
+    check(
+        abs(cps.get_camera_plane(export_path=str(WORK / "grid.png"))["distance"] - 5) < 1e-3,
+        "the distance of a mesh with more than four vertices is right",
+    )
+
     for kwargs, label in (
         ({"distance": 0}, "distance"),
         ({"fit": "bogus"}, "fit"),
