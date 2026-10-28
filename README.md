@@ -39,6 +39,10 @@ This package provides Griptape nodes for capturing camera views from Blender sce
 - `blender/trace_grease_pencil.py` - Script the background Blender runs to trace and render previews
 - `blender/grease_pencil_scene.py` - Places traced drawings in a scene, in the background or open Blender
 - `blender/blender_mcp_client.py` - Client for the Blender Lab MCP add-on's socket
+- `blender/image_to_camera_plane.py` and `blender/get_camera_plane.py` - Nodes that put an image or movie on a camera as a plane, and read it back
+- `blender/camera_plane_scene.py` - Camera plane code that runs inside the open Blender
+- `blender/camera_plane_client.py` - Sends that code to the open Blender through the MCP add-on
+- `blender/media_files.py` - Saves media in the project so Blender can point at a file that stays put
 
 ## Quick Setup
 
@@ -186,6 +190,46 @@ The tracer outlines each line rather than following its center. With `Fill` on t
 the outlines, drawn at `Thickness`. Blender is
 found from `Blender Path`, then `$BLENDER_PATH`, then `blender` on `PATH`, then `/Applications/Blender.app`. Tested
 with Blender 5.3.
+
+### Image to Camera Plane Node
+
+Adds an image or a movie to a camera in the scene open in Blender as a plane that fills the camera's frame. The plane
+is parented to the camera, so it follows every camera move, and it renders. (Blender's camera background images only
+show in the viewport.) It talks to the open Blender through the Blender Lab MCP add-on, like Image to Grease Pencil, so
+install the add-on, turn on Preferences > System > Allow Online Access, and start its server (port 9876).
+
+**Parameters:**
+- `Image or Movie` - an image, or a movie (a `VideoUrlArtifact`). A file already on disk is used where it is. Anything
+  else is saved in the project first, so Blender has a file that stays put.
+- `Distance` - how far in front of the lens the plane sits, in scene units. The plane is sized to fill the frame at that
+  distance, so it looks the same at any distance. An orthographic camera's frame doesn't grow with distance.
+- `Fit` - fill the frame (the overflow falls outside it), fit the whole image inside it, or stretch it to the frame.
+- `Plane Name`, and `Replace Existing`, which swaps out the plane this node made earlier on the same camera with the
+  same name (dots and all). Planes you made yourself are never replaced.
+- `Camera` and `Scene` (under Blender) - empty means the scene's active camera in the scene showing in Blender's window.
+
+The plane uses an emission material with the image's alpha as transparency, so it shows the image as it is. Camera
+sensor, sensor fit, lens shift and aspect ratio are all taken into account. A movie plays from the scene's start
+frame, and the node reports its frame count.
+
+### Get Camera Plane Node
+
+Finds the image plane on a camera in the open scene and returns its image or movie, as an `ImageUrlArtifact` or a
+`VideoUrlArtifact`, with the plane's name, the camera and the distance. It prefers a plane Image to Camera Plane made,
+and it also finds any other mesh parented to the camera that shows an image, such as a paper plane you made by hand.
+An image with no file of its own (packed in the .blend, or generated in Blender) is exported first. The file has to be
+on the same machine as the engine.
+
+### Testing the camera plane code
+
+The code that runs inside Blender is checked in Blender itself, with a script that renders small test scenes and exits
+with an error if a check fails:
+
+```bash
+blender -b --python tests/blender/test_camera_plane_scene.py
+```
+
+The movie check needs `ffmpeg`.
 
 ## Workflow Integration
 
