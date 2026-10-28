@@ -14,7 +14,7 @@ from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
 from griptape_nodes.exe_types.param_types.parameter_string import ParameterString
 from griptape_nodes.files.file import File
 from griptape_nodes.traits.options import Options
-from media_files import save_project_file
+from media_files import hashed_filename, save_project_file
 
 FIT_LABELS = {
     "Fill the frame (the overflow falls outside it)": FIT_FILL,
@@ -163,7 +163,9 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
     def _media_file(self, media: Any) -> str:
         """A path on this machine for `media`. A file already on disk is used where it is, and anything else is saved."""
         if isinstance(media, ImageArtifact):
-            return save_project_file(self.name, "camera_plane.png", media.value).resolve()
+            return save_project_file(
+                self.name, hashed_filename("camera_plane", media.value, ".png"), media.value
+            ).resolve()
         location = media if isinstance(media, str) else getattr(media, "value", None)
         if not isinstance(location, str) or not location:
             msg = "Connect an image or a movie."
@@ -175,7 +177,8 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
                 raise FileNotFoundError(msg)
             return resolved
         suffix = Path(urlparse(resolved).path).suffix or ".png"
-        return save_project_file(self.name, f"camera_plane{suffix}", File(resolved).read_bytes()).resolve()
+        content = File(resolved).read_bytes()
+        return save_project_file(self.name, hashed_filename("camera_plane", content, suffix), content).resolve()
 
     def _add(self) -> str:
         value = self.get_parameter_value

@@ -6,8 +6,8 @@ MCP add-on and call `add_camera_plane` or `get_camera_plane` there, so it must s
 
 A camera plane is a textured plane parented to a camera. It sits in the camera's own space, so it follows every camera
 move, and it renders. Blender's camera background images do neither of those once you render, which is why a plane is
-used. Planes this module makes carry `CAMERA_PLANE` as a custom property, so a re-run replaces them and nothing the
-user made is ever removed.
+used. Planes this module makes carry `CAMERA_PLANE`, set to the name they were made with, as a custom property, so a re-run
+replaces them and nothing the user made is ever removed.
 """
 
 import bpy
@@ -165,6 +165,7 @@ def add_camera_plane(  # noqa: PLR0913
     if distance <= 0:
         msg = "The distance must be more than 0."
         raise ValueError(msg)
+    name = name.strip() or DEFAULT_NAME
     target_scene = _scene(scene)
     cam = _camera(target_scene, camera)
     try:
@@ -181,7 +182,8 @@ def add_camera_plane(  # noqa: PLR0913
     center = sum(corners, Vector()) / len(corners)
     width, height = _plane_size(frame_size, _media_size(image), fit)
 
-    earlier = [obj for obj in cam.children if obj.get(CAMERA_PLANE) and obj.name.split(".")[0] == name]
+    # The marker holds the name the plane was made with, so a rename or a dot in the name cannot hide it from a re-run.
+    earlier = [obj for obj in cam.children if obj.get(CAMERA_PLANE) == name]
     if replace:
         for obj in earlier:
             _remove_plane(obj, keep=image)
@@ -201,7 +203,7 @@ def add_camera_plane(  # noqa: PLR0913
     mesh.materials.append(_make_material(name, image, target_scene))
 
     plane = bpy.data.objects.new(name, mesh)
-    plane[CAMERA_PLANE] = True
+    plane[CAMERA_PLANE] = name
     _collection_for(cam, target_scene).objects.link(plane)
     plane.parent = cam
     return {

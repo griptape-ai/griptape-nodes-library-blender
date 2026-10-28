@@ -1,5 +1,6 @@
 """Save media for the camera plane nodes in the project, so Blender can point at a file that stays put."""
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -7,6 +8,15 @@ from griptape_nodes.exe_types.param_components.project_file_parameter import Pro
 from griptape_nodes.files.file import File
 from griptape_nodes.files.project_file import ProjectFileDestination
 from griptape_nodes.retained_mode.events.os_events import ExistingFilePolicy
+
+
+def hashed_filename(stem: str, content: bytes, suffix: str) -> str:
+    """`stem` and `suffix` around a short hash of `content`.
+
+    Each distinct image gets its own file, so a plane made earlier keeps its picture when the node runs again with a
+    different one. Running again with the same image writes the same file.
+    """
+    return f"{stem}_{hashlib.sha256(content).hexdigest()[:10]}{suffix}"
 
 
 def project_path(node_name: str, filename: str) -> Path:

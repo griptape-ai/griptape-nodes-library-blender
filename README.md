@@ -205,7 +205,7 @@ install the add-on, turn on Preferences > System > Allow Online Access, and star
   distance, so it looks the same at any distance. An orthographic camera's frame doesn't grow with distance.
 - `Fit` - fill the frame (the overflow falls outside it), fit the whole image inside it, or stretch it to the frame.
 - `Plane Name`, and `Replace Existing`, which swaps out the plane this node made earlier on the same camera with the
-  same name. Planes you made yourself are never replaced.
+  same name (dots and all). Planes you made yourself are never replaced.
 - `Camera` and `Scene` (under Blender) - empty means the scene's active camera in the scene showing in Blender's window.
 
 The plane uses an emission material with the image's alpha as transparency, so it shows the image as it is. Camera

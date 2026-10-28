@@ -9,7 +9,7 @@ from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_types.parameter_float import ParameterFloat
 from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
 from griptape_nodes.exe_types.param_types.parameter_string import ParameterString
-from media_files import project_path, save_project_file
+from media_files import hashed_filename, project_path, save_project_file
 
 MOVIE_SOURCES = {"MOVIE", "SEQUENCE"}
 
@@ -145,7 +145,8 @@ class BlenderGetCameraPlane(SuccessFailureNode):
             msg = f"Blender has the file at {path}, but it is not on this machine."
             raise FileNotFoundError(msg)
         is_movie = found["source"] in MOVIE_SOURCES
-        saved = save_project_file(self.name, f"camera_plane{path.suffix or '.png'}", path.read_bytes())
+        content = path.read_bytes()
+        saved = save_project_file(self.name, hashed_filename("camera_plane", content, path.suffix or ".png"), content)
         self.parameter_output_values["image"] = None if is_movie else ImageUrlArtifact(value=saved.location)
         self.parameter_output_values["video"] = VideoUrlArtifact(value=saved.location) if is_movie else None
         self.parameter_output_values["plane_name"] = found["plane"]

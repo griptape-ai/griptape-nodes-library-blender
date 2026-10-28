@@ -99,6 +99,24 @@ def test_stretch_orientation_and_replace():
     check(at(w // 4, h - 3)[:3] == RED, "fill covers the frame with no bars")
 
 
+def test_names_with_dots():
+    scene, camera = setup_scene()
+    quad = make_image("quad4", (400, 200), (RED, GREEN, BLUE, YELLOW))
+    cps.add_camera_plane(str(quad), name="plate.v2")
+    result = cps.add_camera_plane(str(quad), name="plate.v2")
+    check(
+        result["replaced"] == 1 and [o.name for o in camera.children] == ["plate.v2"], "a name with a dot is replaced"
+    )
+    cps.add_camera_plane(str(quad), name="Camera Plane.old")
+    cps.add_camera_plane(str(quad))
+    names = sorted(o.name for o in camera.children)
+    check(names == ["Camera Plane", "Camera Plane.old", "plate.v2"], "a default-name run leaves other names alone")
+    cps.add_camera_plane(str(quad), name="  ")
+    check(
+        len([o for o in camera.children if o.name.startswith("Camera Plane")]) == 2, "a blank name is the default name"
+    )
+
+
 def test_alpha_and_shift():
     scene, camera = setup_scene()
     half = make_image("half", (200, 200), (MAGENTA, None, MAGENTA, None))
@@ -202,7 +220,13 @@ def test_ortho_get_and_errors():
         check(True, "a missing file is an error")
 
 
-for test in (test_stretch_orientation_and_replace, test_alpha_and_shift, test_movie, test_ortho_get_and_errors):
+for test in (
+    test_stretch_orientation_and_replace,
+    test_names_with_dots,
+    test_alpha_and_shift,
+    test_movie,
+    test_ortho_get_and_errors,
+):
     print(f"-- {test.__name__}")
     test()
 print("ALL PASSED")
