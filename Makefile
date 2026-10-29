@@ -125,6 +125,10 @@ check/types:
 check/changelog: ## Check CHANGELOG.md and the changelog.d entries follow Keep a Changelog.
 	@uv run --no-project python scripts/changelog.py check
 
+.PHONY: test/unit
+test/unit: ## Run unit tests.
+	@uv run pytest tests/unit
+
 .PHONY: changelog
 changelog: ## Print [Unreleased] as the next version will show it, changelog.d entries folded in.
 	@uv run --no-project python scripts/changelog.py render
