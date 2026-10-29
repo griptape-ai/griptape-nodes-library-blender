@@ -208,9 +208,17 @@ install the add-on, turn on Preferences > System > Allow Online Access, and star
   same name (dots and all). Planes you made yourself are never replaced.
 - `Camera` and `Scene` (under Blender) - empty means the scene's active camera in the scene showing in Blender's window.
 
-The plane uses an emission material with the image's alpha as transparency, so it shows the image as it is. Camera
-sensor, sensor fit, lens shift and aspect ratio are all taken into account. A movie plays from the scene's start
-frame, and the node reports its frame count.
+The plane is laid out the way the [Camera Plane add-on](https://extensions.blender.org/add-ons/lfs_camera_plane/)
+lays out the planes it imports, so the two work on the same camera and you don't need the add-on for this. The plane is
+parented to the camera and one unit wide, its distance and scale are the custom property `camera_plane`, and drivers
+turn those into a position and size from the camera's field of view and lens shift. Change the lens or the shift and
+the plane keeps fitting the frame. Change `distance` or `scale` (in the add-on's panel, or on the property) and it moves
+and resizes to match. Its transforms are locked and it is drawn with a wireframe outline. An orthographic camera's
+frame doesn't grow with distance, so there the plane's size is baked in and has no drivers.
+
+The material shows the image as it is (a camera ray sees the image, other rays see a plain surface, so the plane
+neither lights the scene nor is lit), with the image's alpha, times an `Opacity Multiplier` slider, as transparency.
+A movie plays from the scene's start frame, and the node reports its frame count.
 
 ### Get Camera Plane Node
 

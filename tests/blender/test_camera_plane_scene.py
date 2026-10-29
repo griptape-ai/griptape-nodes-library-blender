@@ -7,6 +7,7 @@ with an error if any check fails.
 """
 
 import importlib.util
+import math
 import shutil
 import subprocess
 import sys
@@ -115,6 +116,71 @@ def test_names_with_dots():
     check(
         len([o for o in camera.children if o.name.startswith("Camera Plane")]) == 2, "a blank name is the default name"
     )
+
+
+def test_addon_layout():
+    """The plane is laid out like the Camera Plane add-on's, so it follows the lens and the add-on can drive it."""
+    scene, camera = setup_scene()
+    camera.data.lens, camera.data.shift_x = 35, 0.1
+    quad = make_image("layout", (400, 200), (RED, GREEN, BLUE, YELLOW))
+    cps.add_camera_plane(str(quad), distance=10, fit="fit")
+    bpy.context.view_layer.update()
+    plane = camera.children[0]
+    check(
+        plane.parent == camera and tuple(plane.location) == (0, 0, 0),
+        "the plane is parented to the camera at its origin",
+    )
+    check(dict(plane["camera_plane"]) == {"distance": 10.0, "scale": 100.0}, "the plane carries its distance and scale")
+    check(
+        all(plane.lock_location) and all(plane.lock_rotation) and all(plane.lock_scale),
+        "the plane's transforms are locked",
+    )
+    check(plane.show_wire, "the plane is drawn with a wireframe outline")
+    expected = sorted(
+        ["-distance"] + ["tan(FOV/2) * distance*2 * shift"] * 2 + ["tan(FOV/2) * distance*2 * scale/100.0"] * 2
+    )
+    check(
+        sorted(d.driver.expression for d in plane.animation_data.drivers) == expected,
+        "drivers set its position and size",
+    )
+    unit = 2 * math.tan(camera.data.angle / 2) * 10
+    check(
+        abs(plane.delta_scale[0] - unit) < 1e-4 and abs(plane.delta_location[2] + 10) < 1e-6,
+        "the drivers size it to the frame",
+    )
+    check(abs(plane.delta_location[0] - unit * 0.1) < 1e-4, "the drivers follow the lens shift")
+
+    camera.data.lens = 85
+    bpy.context.view_layer.update()
+    check(
+        abs(plane.delta_scale[0] - 2 * math.tan(camera.data.angle / 2) * 10) < 1e-4,
+        "changing the lens resizes the plane",
+    )
+    plane["camera_plane"]["distance"] = 20.0
+    plane.update_tag(refresh={"OBJECT"})  # A change inside a custom property does not tell Blender's dependency graph.
+    for driver in plane.animation_data.drivers:
+        driver.update()
+    bpy.context.view_layer.update()
+    expected_scale = 2 * math.tan(camera.data.angle / 2) * 20
+    check(
+        abs(plane.delta_location[2] + 20) < 1e-6 and abs(plane.delta_scale[0] - expected_scale) < 1e-4,
+        "changing the distance moves and resizes it",
+    )
+    check("Opacity Multiplier" in plane.active_material.node_tree.nodes, "the material has the opacity slider")
+    if hasattr(plane, "camera_plane"):
+        check(plane.camera_plane.distance == 20.0, "the Camera Plane add-on reads the plane's distance")
+    else:
+        print("skipped: the Camera Plane add-on is not installed")
+
+    # Stretch still fills the frame after the lens and shift change.
+    for old in list(camera.children):
+        cps._remove_plane(old)
+    cps.add_camera_plane(str(quad), distance=6, fit="stretch")
+    camera.data.lens, camera.data.shift_y = 24, -0.05
+    at = render(scene, "refit")
+    w, h = scene.render.resolution_x, scene.render.resolution_y
+    corners = [at(3, h - 4)[:3], at(w - 4, h - 4)[:3], at(3, 3)[:3], at(w - 4, 3)[:3]]
+    check(corners == [RED, GREEN, BLUE, YELLOW], "a stretched plane still fills the frame after the lens changes")
 
 
 def test_alpha_and_shift():
@@ -244,6 +310,7 @@ def test_ortho_get_and_errors():
 for test in (
     test_stretch_orientation_and_replace,
     test_names_with_dots,
+    test_addon_layout,
     test_alpha_and_shift,
     test_movie,
     test_ortho_get_and_errors,
