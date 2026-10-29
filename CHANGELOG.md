@@ -10,4 +10,4 @@ the `library_version` in `blender/griptape_nodes_library.json`.
 
 <!-- Entries go in changelog.d/, one file each. See changelog.d/README.md. -->
 
-[Unreleased]: https://github.com/griptape-ai/griptape-nodes-library-blender/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/griptape-ai/griptape-nodes-library-blender/compare/504cd15bda8d1bf6551fba80f296053993e61657...HEAD
