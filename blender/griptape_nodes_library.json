@@ -24,7 +24,7 @@
             "Blender": {
                 "color": "border-orange-500",
                 "title": "Blender",
-                "description": "Nodes for real-time interaction with Blender scenes via socket server.",
+                "description": "Nodes for working with the scene open in Blender, through the Blender Lab MCP add-on.",
                 "icon": "Camera"
             }
         }
