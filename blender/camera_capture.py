@@ -209,9 +209,10 @@ class BlenderCameraCapture(ControlNode):
         self._update_camera_metadata_display()
 
     def _get_available_cameras(self) -> list[str]:
-        """Fetch available cameras from the scene open in Blender."""
+        """Fetch available cameras from the scene open in Blender, on the node's MCP port."""
         try:
-            return [camera["name"] for camera in camera_client.list_cameras()["cameras"]] or ["Camera"]
+            found = camera_client.list_cameras(port=int(self.get_parameter_value("mcp_port")))
+            return [camera["name"] for camera in found["cameras"]] or ["Camera"]
         except Exception as e:
             logger.warning(f"Could not fetch cameras from Blender: {e}")
             return ["Camera"]
@@ -402,6 +403,12 @@ class BlenderCameraCapture(ControlNode):
             except Exception:
                 # Don't let processing errors break the node
                 pass
+
+        elif parameter.name == "mcp_port":
+            # The port decides which Blender the cameras come from, and a saved port loads after __init__
+            camera_param = self.get_parameter_by_name("camera_name")
+            if camera_param:
+                self._update_camera_choices(camera_param, self._get_available_cameras())
 
         elif parameter.name == "camera_name":
             # Update metadata display when camera selection changes

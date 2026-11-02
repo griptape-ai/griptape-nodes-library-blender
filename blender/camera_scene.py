@@ -11,7 +11,7 @@ import time
 
 import bpy
 
-# A scene with more than any of these gets a smaller render, and the lighter OpenGL path.
+# A scene with more than any of these gets a smaller render, and Workbench's OpenGL render, which is lighter.
 COMPLEX_OBJECTS = 200
 COMPLEX_MATERIALS = 50
 COMPLEX_MESHES = 100
@@ -106,7 +106,7 @@ def render_camera(camera: str, width: int, height: int) -> dict:
         render.image_settings.compression = 0
         render.filepath = temp_file
         if complex_scene:
-            _render_opengl(obj, width, height, temp_file)
+            bpy.ops.render.opengl(write_still=True, view_context=False)
         else:
             bpy.ops.render.render(write_still=True)
         with open(temp_file, "rb") as f:
@@ -135,30 +135,3 @@ def render_camera(camera: str, width: int, height: int) -> dict:
         "render_time": time.time() - started,
         "scene_complexity": "complex" if complex_scene else "normal",
     }
-
-
-def _render_opengl(camera: bpy.types.Object, width: int, height: int, filepath: str) -> None:
-    """Render through a scene that holds only a copy of `camera`, so a heavy scene is not evaluated."""
-    window = bpy.context.window
-    original_scene = window.scene
-    temp_scene = bpy.data.scenes.new(name="Griptape_Temp")
-    camera_copy = camera.copy()
-    camera_copy.data = camera.data.copy()
-    try:
-        temp_scene.collection.objects.link(camera_copy)
-        temp_scene.camera = camera_copy
-        temp_scene.render.engine = "BLENDER_WORKBENCH"
-        temp_scene.render.resolution_x = width
-        temp_scene.render.resolution_y = height
-        temp_scene.render.resolution_percentage = 100
-        temp_scene.render.image_settings.file_format = "PNG"
-        temp_scene.render.filepath = filepath
-        window.scene = temp_scene
-        bpy.ops.render.opengl(write_still=True, view_context=False)
-    finally:
-        window.scene = original_scene
-        camera_data = camera_copy.data
-        bpy.data.objects.remove(camera_copy, do_unlink=True)
-        if camera_data.users == 0:
-            bpy.data.cameras.remove(camera_data)
-        bpy.data.scenes.remove(temp_scene, do_unlink=True)
