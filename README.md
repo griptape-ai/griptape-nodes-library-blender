@@ -1,44 +1,33 @@
 # Griptape Nodes Blender Integration
 
-Camera capture nodes for Blender integration with Griptape workflows.
+Nodes for working with the scene open in Blender, from Griptape workflows.
 
 ## Overview
 
-This package provides Griptape nodes for capturing camera views from Blender scenes. The integration works through a simple socket server that runs inside Blender, providing a reliable and efficient communication channel.
+Every node that works with an open Blender talks to the official
+[Blender Lab MCP add-on](https://www.blender.org/lab/mcp-server/). The add-on runs a server inside Blender, on port 9876
+by default. The nodes send it Python and read back the result. No AI agent is involved.
 
 ## Architecture
 
 ```
 ┌─────────────────┐    Socket/TCP     ┌──────────────────┐    bpy Python API ┌─────────┐
-│ Griptape Nodes  │ ←─────────────────→ │  Socket Server   │ ←───────────────→ │ Blender │
-│   (Clients)     │     JSON/8765     │  (Inside Blender) │                   │ (3D App) │
+│ Griptape Nodes  │ ←───────────────→ │  Blender Lab MCP │ ←───────────────→ │ Blender │
+│   (Clients)     │     JSON/9876     │  add-on          │                   │ (3D App) │
 └─────────────────┘                   └──────────────────┘                   └─────────┘
 ```
 
-## Features
-
-- ✅ **Simple socket communication** - No complex async context issues
-- ✅ **Runs inside Blender** - Direct access to bpy API and scene data  
-- ✅ **Real-time camera capture** - Render images from any camera in scene
-- ✅ **Comprehensive camera metadata** - Focal length, sensor info, DOF, transforms
-- ✅ **Dynamic UI updates** - Camera dropdowns and metadata labels update automatically
-- ✅ **Flow control support** - Both nodes integrate seamlessly into control workflows
-- ✅ **Always fresh data** - Camera List Node re-evaluates on every workflow run
-- ✅ **Automatic engine handling** - Fixes Eevee Next and GPU issues automatically
-- ✅ **No external dependencies** - Just Python standard library
-- ✅ **Easy setup** - Copy/paste script into Blender
-
 ## Files
 
-- `blender/blender_socket_server.py` - Socket server that runs inside Blender
-- `blender/socket_client.py` - Socket client utilities for Griptape nodes  
+- `blender/blender_mcp_client.py` - Client for the Blender Lab MCP add-on's socket
 - `blender/camera_capture.py` - Camera capture node for Griptape workflows
 - `blender/camera_list.py` - Node to list available cameras in Blender scene
+- `blender/camera_scene.py` - Camera code that runs inside the open Blender
+- `blender/camera_client.py` - Sends that code to the open Blender through the MCP add-on
 - `blender/image_to_grease_pencil.py` - Node that traces images into Grease Pencil
 - `blender/grease_pencil_trace.py` - Runs the trace in a background Blender and sends the result to an open one
 - `blender/trace_grease_pencil.py` - Script the background Blender runs to trace and render previews
 - `blender/grease_pencil_scene.py` - Places traced drawings in a scene, in the background or open Blender
-- `blender/blender_mcp_client.py` - Client for the Blender Lab MCP add-on's socket
 - `blender/image_to_camera_plane.py` and `blender/get_camera_plane.py` - Nodes that put an image or movie on a camera as a plane, and read it back
 - `blender/camera_plane_scene.py` - Camera plane code that runs inside the open Blender
 - `blender/camera_plane_client.py` - Sends that code to the open Blender through the MCP add-on
@@ -46,38 +35,10 @@ This package provides Griptape nodes for capturing camera views from Blender sce
 
 ## Quick Setup
 
-### 1. Start Blender Socket Server
-
-1. **Open Blender**
-2. **Go to Scripting workspace** (tab at top)
-3. **Create new text file** (click "New")
-4. **Copy the entire contents** of `blender/blender_socket_server.py`
-5. **Paste into Blender's text editor**
-6. **Click "Run Script"** button
-
-The server will auto-start and show:
-```
-✓ Blender Socket Server started on localhost:8765
-Ready to receive commands from Griptape nodes
-```
-
-### 2. Use Griptape Nodes
-
-The camera capture and camera list nodes will automatically connect to the socket server running in Blender.
-
-## Server Controls
-
-### In Blender Console:
-```python
-start_server()    # Start the socket server
-stop_server()     # Stop the socket server  
-server_status()   # Check if running
-```
-
-### In Blender UI:
-- **3D Viewport** → Press `N` → **Griptape tab**
-- **Start/Stop buttons** with status indicator
-- **Port information** display
+1. Open Blender and install the MCP add-on from [Blender Lab](https://www.blender.org/lab/mcp-server/).
+2. Turn on Preferences > System > Allow Online Access.
+3. Start the add-on's server. It listens on port 9876. If you use another port, set `MCP Port` on the node.
+4. Use the nodes. They connect to the open Blender when they run.
 
 ## Add your library to your installed Engine! 
 
@@ -116,6 +77,7 @@ Captures single frames from Blender cameras with detailed camera metadata displa
 - `resolution_y` - Image height in pixels (64-4096, default: 1080) 
 - `output_format` - PNG or JPEG (default: PNG)
 - `quality` - JPEG quality 1-100 (default: 90)
+- `mcp_port` - Port of the Blender Lab MCP add-on's server (default: 9876)
 
 **Camera Metadata Labels (displayed under Camera dropdown):**
 - `Status` - Shows if camera is active scene camera
@@ -145,7 +107,9 @@ Lists all cameras in the current Blender scene with comprehensive metadata.
 **Features:**
 - ✅ **Always re-evaluates** - Fetches fresh camera data on every workflow run
 - ✅ **Comprehensive camera data** - Collects detailed camera properties via Blender API
-- ✅ **Automatic fallback** - Falls back to basic data if enhanced collection fails
+
+**Parameters:**
+- `mcp_port` - Port of the Blender Lab MCP add-on's server (default: 9876)
 
 **Outputs:**
 - `cameras_output` - Detailed camera info including metadata (ListArtifact)
@@ -165,7 +129,7 @@ Lists all cameras in the current Blender scene with comprehensive metadata.
 ### Image to Grease Pencil Node
 
 Traces an image, or a list of images, into a Grease Pencil drawing. Tracing runs in a background Blender, so it works
-with no Blender open; turn off `Send To Open Scene` in that case. It does not use the socket server.
+with no Blender open; turn off `Send To Open Scene` in that case. It does not use a separate server.
 
 **Modes:**
 - **Animated** - one object, one keyframe per image (`Start Frame`, `Frame Step`)
@@ -268,99 +232,20 @@ Camera Capture Node works independently but with limited features:
 - Basic status messages instead of detailed metadata
 - Manual refresh required for scene changes
 
-## Socket Server Commands
-
-The server responds to these JSON commands on port 8765:
-
-### Health Check
-```json
-{"command": "health_check"}
-```
-
-### Scene Information  
-```json
-{"command": "get_scene_info"}
-```
-
-### List Cameras
-```json
-{"command": "list_cameras"}
-```
-
-### Render Camera
-```json
-{
-  "command": "render_camera",
-  "params": {
-    "camera_name": "Camera",
-    "width": 1920,
-    "height": 1080,
-    "format_type": "PNG",
-    "quality": 90
-  }
-}
-```
-
-### Execute Code (Enhanced Camera Data)
-```json
-{
-  "command": "execute_code", 
-  "params": {
-    "code": "import bpy; cameras = [{'name': obj.name, 'focal_length': obj.data.lens} for obj in bpy.data.objects if obj.type == 'CAMERA']"
-  }
-}
-```
-
-## Engine Handling
-
-The server automatically handles render engine issues:
-
-- **Eevee Next** → Switches to Cycles CPU (headless stability)
-- **Cycles** → Forces CPU rendering (avoids GPU context issues)
-- **Other engines** → CPU-only for maximum stability
-
-## Benefits vs MCP Approach
-
-- ✅ **No async context issues** - Simple socket connections  
-- ✅ **Persistent server** - Runs inside Blender, stays responsive
-- ✅ **Easy debugging** - Clear JSON communication
-- ✅ **No complex dependencies** - Just Python sockets
-- ✅ **Better performance** - Direct bpy access, no process spawning
-
 ## Troubleshooting
 
-### "Could not connect to Blender server at localhost:8765"
+### "Could not reach Blender at localhost:9876"
 
-1. **Make sure Blender is running** with the socket server script
-2. **Check server status** in Blender console: `server_status()`
-3. **Restart server** if needed: `stop_server()` then `start_server()`
-4. **Check port availability** - make sure nothing else is using port 8765
-
-### "PIL not available for PNG encoding"
-
-The server needs PIL for image encoding. Install in Blender's Python:
-```bash
-/Applications/Blender.app/Contents/Resources/4.4/python/bin/python3.11 -m pip install Pillow
-```
-
-### Socket Server Not Starting
-
-1. **Check Blender console** for error messages
-2. **Verify script is run inside Blender** (not external Python)
-3. **Try different port** by editing the script: `BlenderSocketServer(port=8766)`
+1. **Make sure Blender is running** with the MCP add-on installed.
+2. **Turn on** Preferences > System > Allow Online Access, then start the add-on's server.
+3. **Check the port.** If the add-on listens on another port, set `MCP Port` on the node.
 
 ### Render Issues
 
-- Server forces CPU rendering for stability
-- Automatically switches problematic engines (Eevee Next)
-- Check Blender console for render error messages
+- Camera Capture renders with Workbench and puts the scene's settings back afterwards.
+- Scenes with many objects, materials or meshes render at 512 pixels at most.
+- Check Blender's console for render error messages.
 
 ## Requirements
 
-- **Blender 3.0+** (tested with 4.4.3)
-- **Python 3.8+** (included with Blender)
-- **Pillow** (for image encoding, install in Blender's Python)
-
-## No External Dependencies
-
-Unlike the previous MCP approach, this socket-based solution requires no external Python packages in your Griptape environment. All communication happens through standard Python sockets.
+- **Blender 4.2+** with the Blender Lab MCP add-on (tested with 5.3)

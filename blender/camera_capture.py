@@ -1,15 +1,15 @@
 import base64
 import json
 
+import blender_mcp_client
+import camera_client
 from griptape.artifacts import ErrorArtifact, ImageUrlArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import ControlNode
 from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
+from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
 from griptape_nodes.retained_mode.griptape_nodes import logger
 from griptape_nodes.traits.options import Options
-
-# Import socket client utilities
-from socket_client import get_scene_info, list_cameras
 
 
 class BlenderCameraCapture(ControlNode):
@@ -19,12 +19,21 @@ class BlenderCameraCapture(ControlNode):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.category = "Blender"
-        self.description = "Captures a single frame from a Blender camera via socket server."
+        self.description = "Captures a single frame from a camera in the scene open in Blender."
         self.metadata["author"] = "Griptape"
         self.metadata["dependencies"] = {}
 
         # Register this instance
         BlenderCameraCapture._instances.append(self)
+
+        with ParameterGroup(name="Blender", collapsed=True) as blender_group:
+            ParameterInt(
+                name="mcp_port",
+                display_name="MCP Port",
+                tooltip="Port of the Blender Lab MCP add-on's server.",
+                default_value=blender_mcp_client.DEFAULT_PORT,
+            )
+        self.add_node_element(blender_group)
 
         # Camera list input (optional - for connecting to BlenderCameraList node)
         self.add_parameter(
@@ -200,77 +209,17 @@ class BlenderCameraCapture(ControlNode):
         self._update_camera_metadata_display()
 
     def _get_available_cameras(self) -> list[str]:
-        """Fetch available cameras from the Blender socket server."""
+        """Fetch available cameras from the scene open in Blender."""
         try:
-            result = list_cameras()
-            if result.get("success") and result.get("cameras"):
-                return [camera["name"] for camera in result["cameras"]]
-            else:
-                logger.warning(f"Could not fetch cameras: {result.get('error', 'Unknown error')}")
-                return ["Camera"]
+            return [camera["name"] for camera in camera_client.list_cameras()["cameras"]] or ["Camera"]
         except Exception as e:
-            logger.warning(f"Could not fetch cameras from Blender socket server: {e}")
+            logger.warning(f"Could not fetch cameras from Blender: {e}")
             return ["Camera"]
 
-    @classmethod
-    def _update_all_camera_lists(cls):
-        """Update camera lists for all BlenderCameraCapture instances."""
-        try:
-            # Get fresh camera list
-            cameras = []
-            result = list_cameras()
-            if result.get("success") and result.get("cameras"):
-                cameras = [camera["name"] for camera in result["cameras"]]
-            else:
-                cameras = ["Camera"]  # Fallback
-
-            # Update all instances
-            for instance in cls._instances:
-                if instance:  # Check instance is still valid
-                    camera_param = instance.get_parameter_by_name("camera_name")
-                    if camera_param:
-                        instance._update_camera_choices(camera_param, cameras)
-        except Exception as e:
-            logger.warning(f"Failed to update camera lists: {e}")
-
-    @classmethod
-    def _update_camera_lists_from_blender(cls):
-        """Update camera lists for all instances by fetching from Blender."""
-        try:
-            # Get fresh camera list from Blender
-            cameras = []
-            result = list_cameras()
-            if result.get("success") and result.get("cameras"):
-                cameras = [camera["name"] for camera in result["cameras"]]
-            else:
-                cameras = ["Camera"]  # Fallback
-
-            # Update all instances with the fetched camera names
-            cls._update_all_camera_lists_with_names(cameras)
-        except Exception as e:
-            logger.warning(f"Failed to update camera lists from Blender: {e}")
-
-    def _check_blender_connection(self) -> tuple[bool, str]:
-        """Check if Blender socket server is available."""
-        try:
-            result = get_scene_info()
-            if result.get("success"):
-                blender_info = result.get("blender", {})
-                version = blender_info.get("version", "Unknown")
-                return True, f"Connected to Blender {version}"
-            else:
-                return False, f"Blender socket server error: {result.get('error', 'Unknown error')}"
-        except Exception as e:
-            return False, f"Cannot connect to Blender socket server: {str(e)}"
-
     def validate_before_node_run(self) -> list[Exception] | None:
-        """Validate that Blender socket server is available before running."""
-        # Note: Camera list updates are now handled by the BlenderCameraList node
+        """Keep the selected camera among the ones the connected Camera List found."""
+        # Note: Camera list updates are handled by the BlenderCameraList node
         # which always re-evaluates and provides fresh data via cameras_input
-
-        is_connected, message = self._check_blender_connection()
-        if not is_connected:
-            return [ConnectionError(message)]
 
         # Validate camera selection if cameras_input is connected
         cameras_input = self.get_parameter_value("cameras_input")
@@ -311,7 +260,6 @@ class BlenderCameraCapture(ControlNode):
             output_format = self.get_parameter_value("output_format") or "PNG"
             resolution_x = self.get_parameter_value("resolution_x") or 1920
             resolution_y = self.get_parameter_value("resolution_y") or 1080
-            quality = self.get_parameter_value("quality") or 90
 
             # If cameras_input is connected, validate camera_name exists in the list
             cameras_input = self.get_parameter_value("cameras_input")
@@ -338,18 +286,13 @@ class BlenderCameraCapture(ControlNode):
             # Update status
             self.parameter_output_values["status_output"] = f"Capturing frame from camera '{camera_name}'..."
 
-            # Call socket server to render camera
+            # Render in the open Blender
             try:
-                # Use shorter timeout for large scenes to prevent dependency graph crashes
-                from socket_client import BlenderSocketClient
-
-                client = BlenderSocketClient(timeout=90)  # 90 second timeout for rendering
-                result = client.render_camera(
-                    camera_name=camera_name,
-                    width=resolution_x,
-                    height=resolution_y,
-                    format_type=output_format.upper(),
-                    quality=quality,
+                render_result = camera_client.render_camera(
+                    camera_name,
+                    resolution_x,
+                    resolution_y,
+                    port=int(self.get_parameter_value("mcp_port")),
                 )
             except Exception as e:
                 error_msg = f"Render operation failed or timed out: {str(e)}"
@@ -357,24 +300,9 @@ class BlenderCameraCapture(ControlNode):
                 self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
                 return
 
-            if not result.get("success"):
-                error_msg = result.get("error", "Unknown error from Blender socket server")
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
-
-            # Get the actual render result from execute_code response
-            render_result = result.get("result", {})
-            if not render_result.get("success"):
-                error_msg = render_result.get("error", "Render failed in Blender")
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
-
-            # Get image data from render result
             image_b64 = render_result.get("image")
             if not image_b64:
-                error_msg = "No image data received from Blender socket server"
+                error_msg = "No image data received from Blender"
                 self.parameter_output_values["status_output"] = f"Error: {error_msg}"
                 self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
                 return
