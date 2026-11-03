@@ -74,6 +74,24 @@
                 "description": "Gets the image or movie from the image plane on the active camera of the scene open in Blender.",
                 "display_name": "Get Camera Plane"
             }
+        },
+        {
+            "class_name": "BlenderSetCamera",
+            "file_path": "set_camera.py",
+            "metadata": {
+                "category": "Blender",
+                "description": "Sets the location, rotation or focal length of a camera in the scene open in Blender, and can keyframe the change.",
+                "display_name": "Set Camera"
+            }
+        },
+        {
+            "class_name": "BlenderSetFrame",
+            "file_path": "set_frame.py",
+            "metadata": {
+                "category": "Blender",
+                "description": "Sets the current frame of the scene open in Blender.",
+                "display_name": "Set Frame"
+            }
         }
     ]
 }

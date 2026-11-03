@@ -23,6 +23,7 @@ by default. The nodes send it Python and read back the result. No AI agent is in
 - `blender/camera_capture.py` - Camera capture node for Griptape workflows
 - `blender/camera_list.py` - Node to list available cameras in Blender scene
 - `blender/camera_scene.py` - Camera code that runs inside the open Blender
+- `blender/set_camera.py` and `blender/set_frame.py` - Nodes that move a camera and change the current frame
 - `blender/camera_client.py` - Sends that code to the open Blender through the MCP add-on
 - `blender/image_to_grease_pencil.py` - Node that traces images into Grease Pencil
 - `blender/grease_pencil_trace.py` - Runs the trace in a background Blender and sends the result to an open one
@@ -202,6 +203,25 @@ blender -b --python tests/blender/test_camera_plane_scene.py
 ```
 
 The movie check needs `ffmpeg`.
+
+### Set Camera Node
+
+Moves, turns or zooms a camera in the scene open in Blender.
+
+**Parameters:**
+- `cameras_input` - Connect to Camera List Node to fill the camera choices (optional)
+- `camera` - The camera to change, chosen from the cameras in the scene. `Active camera` by default
+- `set_location` and `location_x/y/z` - Move the camera, in scene units
+- `set_rotation` and `rotation_x/y/z` - Turn the camera, in degrees
+- `set_focal_length` and `focal_length` - Change the lens, in millimeters
+- `keyframe` - Key what the node changed on Blender's current frame
+- `mcp_port` - Port of the Blender Lab MCP add-on's server (default: 9876)
+
+A value is only changed when its `set_` toggle is on. Run Set Frame first to key on a particular frame.
+
+### Set Frame Node
+
+Sets the current frame of the scene open in Blender, and reports the scene's frame range and frame rate.
 
 ## Workflow Integration
 
