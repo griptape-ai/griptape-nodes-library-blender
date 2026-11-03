@@ -206,9 +206,11 @@ The movie check needs `ffmpeg`.
 
 ### Set Camera Node
 
-Moves, turns or zooms a camera in the scene open in Blender. Leave `Camera` empty for the active camera.
+Moves, turns or zooms a camera in the scene open in Blender.
 
 **Parameters:**
+- `cameras_input` - Connect to Camera List Node to fill the camera choices (optional)
+- `camera` - The camera to change, chosen from the cameras in the scene. `Active camera` by default
 - `set_location` and `location_x/y/z` - Move the camera, in scene units
 - `set_rotation` and `rotation_x/y/z` - Turn the camera, in degrees
 - `set_focal_length` and `focal_length` - Change the lens, in millimeters

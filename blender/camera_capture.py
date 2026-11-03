@@ -2,6 +2,7 @@ import base64
 import json
 
 import blender_mcp_client
+import camera_choices
 import camera_client
 from griptape.artifacts import ErrorArtifact, ImageUrlArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
@@ -62,18 +63,6 @@ class BlenderCameraCapture(ControlNode):
             traits={options_trait},
             ui_options={"display_name": "Camera"},
         )
-
-        # Try adding the trait after parameter creation
-        if hasattr(self.camera_param, "add_trait"):
-            self.camera_param.add_trait(options_trait)
-        elif hasattr(self.camera_param, "traits"):
-            if self.camera_param.traits is None:
-                self.camera_param.traits = set()
-            self.camera_param.traits.add(options_trait)
-        else:
-            if not hasattr(self.camera_param, "_traits"):
-                self.camera_param._traits = set()
-            self.camera_param._traits.add(options_trait)
 
         self.add_parameter(self.camera_param)
 
@@ -209,44 +198,21 @@ class BlenderCameraCapture(ControlNode):
         self._update_camera_metadata_display()
 
     def _get_available_cameras(self) -> list[str]:
-        """Fetch available cameras from the scene open in Blender, on the node's MCP port."""
+        """The cameras in the scene open in Blender, on the node's MCP port."""
         try:
-            found = camera_client.list_cameras(port=int(self.get_parameter_value("mcp_port")))
-            return [camera["name"] for camera in found["cameras"]] or ["Camera"]
-        except Exception as e:
-            logger.warning(f"Could not fetch cameras from Blender: {e}")
-            return ["Camera"]
+            port = int(self.get_parameter_value("mcp_port"))
+        except (TypeError, ValueError):
+            port = blender_mcp_client.DEFAULT_PORT
+        return camera_choices.fetch_names(port) or ["Camera"]
 
     def validate_before_node_run(self) -> list[Exception] | None:
         """Keep the selected camera among the ones the connected Camera List found."""
         # Note: Camera list updates are handled by the BlenderCameraList node
         # which always re-evaluates and provides fresh data via cameras_input
 
-        # Validate camera selection if cameras_input is connected
-        cameras_input = self.get_parameter_value("cameras_input")
-        if cameras_input and hasattr(cameras_input, "value"):
-            current_camera = self.get_parameter_value("camera_name")
-            available_cameras = []
-
-            for item in cameras_input.value:
-                if hasattr(item, "value"):
-                    try:
-                        camera_data = json.loads(item.value)
-                        if "name" in camera_data:
-                            available_cameras.append(camera_data["name"])
-                    except (json.JSONDecodeError, AttributeError):
-                        continue
-
-            if available_cameras and current_camera not in available_cameras:
-                # Update choices first, then auto-correct to first available camera
-                camera_param = self.get_parameter_by_name("camera_name")
-                if camera_param:
-                    self._update_camera_choices(camera_param, available_cameras)
-                    # Set the value directly to bypass validation
-                    camera_param.default_value = available_cameras[0]
-                    if hasattr(camera_param, "value"):
-                        camera_param.value = available_cameras[0]
-                    self.parameter_values["camera_name"] = available_cameras[0]
+        names = camera_choices.names_from_list(self.get_parameter_value("cameras_input"))
+        if names:
+            camera_choices.apply(self, "camera_name", names, names[0])
 
         return None
 
@@ -262,24 +228,10 @@ class BlenderCameraCapture(ControlNode):
             resolution_x = self.get_parameter_value("resolution_x") or 1920
             resolution_y = self.get_parameter_value("resolution_y") or 1080
 
-            # If cameras_input is connected, validate camera_name exists in the list
-            cameras_input = self.get_parameter_value("cameras_input")
-
-            if cameras_input and hasattr(cameras_input, "value"):
-                available_cameras = []
-                for item in cameras_input.value:
-                    if hasattr(item, "value"):
-                        try:
-                            # Parse JSON from TextArtifact
-                            camera_data = json.loads(item.value)
-                            if "name" in camera_data:
-                                available_cameras.append(camera_data["name"])
-                        except (json.JSONDecodeError, AttributeError):
-                            # Skip invalid items
-                            continue
-
-                if camera_name not in available_cameras and available_cameras:
-                    camera_name = available_cameras[0]  # Use first available camera
+            # If a Camera List is connected, the camera must be one it found
+            names = camera_choices.names_from_list(self.get_parameter_value("cameras_input"))
+            if names and camera_name not in names:
+                camera_name = names[0]
 
             # Update camera metadata display
             self._update_camera_metadata_display()
@@ -357,58 +309,16 @@ class BlenderCameraCapture(ControlNode):
     def after_value_set(self, parameter, value):
         """Update camera choices when cameras_input receives new data."""
         if parameter.name == "cameras_input" and value:
-            try:
-                # Extract camera names from the ListArtifact
-                if hasattr(value, "value") and isinstance(value.value, list):
-                    # Parse camera data from TextArtifacts containing JSON
-                    camera_names = []
-                    for _i, item in enumerate(value.value):
-                        if hasattr(item, "value"):
-                            try:
-                                # Each item should be a TextArtifact with JSON camera data
-                                camera_data = json.loads(item.value)
-                                if "name" in camera_data:
-                                    camera_names.append(camera_data["name"])
-                            except (json.JSONDecodeError, AttributeError):
-                                # Skip invalid items
-                                continue
-
-                    if camera_names:
-                        # Update current instance camera parameter choices
-                        camera_param = self.get_parameter_by_name("camera_name")
-                        if camera_param:
-                            # First update the choices
-                            success = self._update_camera_choices(camera_param, camera_names)
-                            if success:
-                                # Now check if current selection is still valid and update if needed
-                                current_camera = self.get_parameter_value("camera_name")
-                                if current_camera not in camera_names:
-                                    # Current selection is invalid, switch to first available camera
-                                    # Use direct parameter value setting to bypass validation temporarily
-                                    camera_param.default_value = camera_names[0]
-                                    if hasattr(camera_param, "value"):
-                                        camera_param.value = camera_names[0]
-                                    self.parameter_values["camera_name"] = camera_names[0]
-
-                            # Note: Not updating all other instances here to prevent feedback loops
-                            # Other instances will get updated when their own cameras_input changes
-
-                        # Update camera metadata display after camera list is updated
-                        try:
-                            self._update_camera_metadata_display()
-                        except Exception:
-                            # Don't let metadata errors break the camera list update
-                            pass
-
-            except Exception:
-                # Don't let processing errors break the node
-                pass
+            names = camera_choices.names_from_list(value)
+            if names:
+                # Other instances are not updated here, to prevent feedback loops
+                camera_choices.apply(self, "camera_name", names, names[0])
+                self._update_camera_metadata_display()
 
         elif parameter.name == "mcp_port":
             # The port decides which Blender the cameras come from, and a saved port loads after __init__
-            camera_param = self.get_parameter_by_name("camera_name")
-            if camera_param:
-                self._update_camera_choices(camera_param, self._get_available_cameras())
+            names = self._get_available_cameras()
+            camera_choices.apply(self, "camera_name", names, names[0])
 
         elif parameter.name == "camera_name":
             # Update metadata display when camera selection changes
@@ -418,68 +328,12 @@ class BlenderCameraCapture(ControlNode):
                 # Don't let metadata errors break camera selection
                 pass
 
-    def _update_camera_choices(self, camera_param, camera_names):
-        """Helper method to update camera choices for a parameter."""
-        try:
-            # Try to find existing Options trait
-            trait_found = False
-
-            # Check multiple possible trait storage locations
-            trait_collections = []
-            if hasattr(camera_param, "traits") and camera_param.traits:
-                trait_collections.append(camera_param.traits)
-            if hasattr(camera_param, "_traits") and camera_param._traits:
-                trait_collections.append(camera_param._traits)
-
-            # Look for Options trait in all collections
-            for traits_collection in trait_collections:
-                for trait in traits_collection:
-                    if hasattr(trait, "choices"):
-                        trait.choices = camera_names
-                        trait_found = True
-                        break
-                if trait_found:
-                    break
-
-            # If no traits found, try to create and add one
-            if not trait_found:
-                try:
-                    from griptape_nodes.traits.options import Options
-
-                    new_options_trait = Options(choices=camera_names)
-
-                    # Try different ways to add the trait
-                    if hasattr(camera_param, "add_trait"):
-                        camera_param.add_trait(new_options_trait)
-                        trait_found = True
-                    elif hasattr(camera_param, "traits"):
-                        if camera_param.traits is None:
-                            camera_param.traits = set()
-                        camera_param.traits.add(new_options_trait)
-                        trait_found = True
-                    else:
-                        if not hasattr(camera_param, "_traits"):
-                            camera_param._traits = set()
-                        camera_param._traits.add(new_options_trait)
-                        trait_found = True
-
-                except Exception:
-                    # If we can't create/add traits, that's ok - we'll work without validation
-                    pass
-
-            return trait_found
-        except Exception:
-            # Return False if update failed, but don't crash
-            return False
-
     @classmethod
     def _update_all_camera_lists_with_names(cls, camera_names, skip_instance=None):
         """Update camera lists for all instances with provided camera names."""
-        for _i, instance in enumerate(cls._instances):
+        for instance in cls._instances:
             if instance and instance != skip_instance:  # Skip the instance that was already updated
-                camera_param = instance.get_parameter_by_name("camera_name")
-                if camera_param:
-                    instance._update_camera_choices(camera_param, camera_names)
+                camera_choices.apply(instance, "camera_name", camera_names, camera_names[0])
 
     def after_incoming_connection(self, source_node, source_parameter, target_parameter):
         """Refresh camera list when connections are made."""

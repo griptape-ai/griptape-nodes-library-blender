@@ -1,11 +1,14 @@
 import blender_mcp_client
+import camera_choices
 import camera_client
-from griptape_nodes.exe_types.core_types import ParameterGroup
+from griptape.artifacts import ListArtifact
+from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_types.parameter_bool import ParameterBool
 from griptape_nodes.exe_types.param_types.parameter_float import ParameterFloat
 from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
 from griptape_nodes.exe_types.param_types.parameter_string import ParameterString
+from griptape_nodes.traits.options import Options
 
 
 class BlenderSetCamera(SuccessFailureNode):
@@ -17,12 +20,21 @@ class BlenderSetCamera(SuccessFailureNode):
         self.description = "Sets the location, rotation or focal length of a camera in the scene open in Blender."
 
         self.add_parameter(
+            Parameter(
+                name="cameras_input",
+                tooltip="Camera list from the Camera List node (optional). Its cameras become the choices for Camera.",
+                type="ListArtifact",
+                input_types=["ListArtifact"],
+                allowed_modes={ParameterMode.INPUT},
+            )
+        )
+        self.add_parameter(
             ParameterString(
                 name="camera",
                 display_name="Camera",
-                tooltip="The camera to change. Leave empty for the scene's active camera.",
-                default_value="",
-                placeholder_text="Active camera",
+                tooltip="The camera to change. The scene's active camera by default.",
+                default_value=camera_choices.ACTIVE_CAMERA,
+                traits={Options(choices=[camera_choices.ACTIVE_CAMERA, *camera_choices.fetch_names()])},
             )
         )
         with ParameterGroup(name="Location") as location_group:
@@ -101,6 +113,16 @@ class BlenderSetCamera(SuccessFailureNode):
             result_details_placeholder="Details appear here.",
         )
 
+    def _set_choices(self, names: list[str]) -> None:
+        camera_choices.apply(self, "camera", [camera_choices.ACTIVE_CAMERA, *names], camera_choices.ACTIVE_CAMERA)
+
+    def after_value_set(self, parameter: Parameter, value: object) -> None:
+        if parameter.name == "cameras_input" and isinstance(value, ListArtifact):
+            self._set_choices(camera_choices.names_from_list(value))
+        elif parameter.name == "mcp_port":
+            # The port decides which Blender the cameras come from, and a saved port loads after __init__
+            self._set_choices(camera_choices.fetch_names(int(value)))  # type: ignore[arg-type]
+
     def process(self) -> AsyncResult[None]:
         yield lambda: self._process()
 
@@ -124,7 +146,7 @@ class BlenderSetCamera(SuccessFailureNode):
             raise ValueError(msg)
         try:
             done = camera_client.set_camera(
-                camera=(value("camera") or "").strip(),
+                camera="" if value("camera") in (None, "", camera_choices.ACTIVE_CAMERA) else value("camera").strip(),
                 location=location,
                 rotation_degrees=rotation,
                 focal_length=focal_length,
