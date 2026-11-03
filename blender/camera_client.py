@@ -34,3 +34,35 @@ def render_camera(
 ) -> dict[str, Any]:
     """Render a frame from `camera` in the open Blender. The PNG comes back base64 encoded under `image`."""
     return _run("render_camera", {"camera": camera, "width": width, "height": height}, host, port)
+
+
+def set_camera(  # noqa: PLR0913
+    *,
+    camera: str = "",
+    location: list[float] | None = None,
+    rotation_degrees: list[float] | None = None,
+    focal_length: float | None = None,
+    keyframe: bool = False,
+    frame: int | None = None,
+    host: str = blender_mcp_client.DEFAULT_HOST,
+    port: int = blender_mcp_client.DEFAULT_PORT,
+) -> dict[str, Any]:
+    """Move, turn or zoom a camera in the open Blender, and describe it afterwards. None leaves a value alone."""
+    arguments = {
+        "camera": camera,
+        "location": location,
+        "rotation_degrees": rotation_degrees,
+        "focal_length": focal_length,
+        "keyframe": keyframe,
+        "frame": frame,
+    }
+    return _run("set_camera", arguments, host, port)
+
+
+def set_frame(
+    frame: int,
+    host: str = blender_mcp_client.DEFAULT_HOST,
+    port: int = blender_mcp_client.DEFAULT_PORT,
+) -> dict[str, Any]:
+    """Go to `frame` in the open Blender and describe the timeline."""
+    return _run("set_frame", {"frame": frame}, host, port)
