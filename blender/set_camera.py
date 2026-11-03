@@ -30,7 +30,7 @@ class BlenderSetCamera(SuccessFailureNode):
                 name="set_location",
                 display_name="Set Location",
                 tooltip="Move the camera. When off, the camera stays where it is.",
-                default_value=True,
+                default_value=False,
             )
             for axis in "xyz":
                 ParameterFloat(
@@ -45,7 +45,7 @@ class BlenderSetCamera(SuccessFailureNode):
                 name="set_rotation",
                 display_name="Set Rotation",
                 tooltip="Turn the camera. When off, the camera keeps its rotation.",
-                default_value=True,
+                default_value=False,
             )
             for axis in "xyz":
                 ParameterFloat(

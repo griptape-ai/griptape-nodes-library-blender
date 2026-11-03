@@ -11,6 +11,7 @@ import tempfile
 import time
 
 import bpy
+from mathutils import Euler
 
 # A scene with more than any of these gets a smaller render, and Workbench's OpenGL render, which is lighter.
 COMPLEX_OBJECTS = 200
@@ -59,10 +60,17 @@ def list_cameras() -> dict:
 
 
 def _find_camera(name: str) -> bpy.types.Object:
-    """The camera called `name`, or the scene's active camera when `name` is empty."""
-    obj = bpy.context.scene.camera if not name else bpy.data.objects.get(name)
+    """The camera called `name` in the open scene, or the scene's active camera when `name` is empty."""
+    scene = bpy.context.scene
+    if not name:
+        if scene.camera is None:
+            msg = "The scene has no active camera."
+            raise ValueError(msg)
+        return scene.camera
+    obj = scene.objects.get(name)
     if obj is None or obj.type != "CAMERA":
-        msg = f"Camera '{name}' not found in the scene." if name else "The scene has no active camera."
+        names = ", ".join(o.name for o in scene.objects if o.type == "CAMERA")
+        msg = f"Camera '{name}' not found in the scene. Cameras: {names or 'none'}."
         raise ValueError(msg)
     return obj
 
@@ -72,10 +80,24 @@ def _describe(obj: bpy.types.Object) -> dict:
     return {
         "camera": obj.name,
         "location": list(obj.location),
-        "rotation_degrees": [math.degrees(v) for v in obj.rotation_euler],
+        "rotation_degrees": [math.degrees(v) for v in obj.matrix_basis.to_euler("XYZ")],
         "focal_length": obj.data.lens,
         "frame": scene.frame_current,
     }
+
+
+def _set_rotation(obj: bpy.types.Object, rotation_degrees: list) -> str:
+    """Turn `obj` to XYZ Euler `rotation_degrees` in the channel its rotation mode uses, and name that channel."""
+    angles = Euler([math.radians(v) for v in rotation_degrees], "XYZ")
+    if obj.rotation_mode == "QUATERNION":
+        obj.rotation_quaternion = angles.to_quaternion()
+        return "rotation_quaternion"
+    if obj.rotation_mode == "AXIS_ANGLE":
+        axis, angle = angles.to_quaternion().to_axis_angle()
+        obj.rotation_axis_angle = (angle, *axis)
+        return "rotation_axis_angle"
+    obj.rotation_euler = angles.to_matrix().to_euler(obj.rotation_mode)
+    return "rotation_euler"
 
 
 def set_camera(
@@ -94,9 +116,9 @@ def set_camera(
         if keyframe:
             obj.keyframe_insert("location", frame=at)
     if rotation_degrees is not None:
-        obj.rotation_euler = [math.radians(v) for v in rotation_degrees]
+        channel = _set_rotation(obj, rotation_degrees)
         if keyframe:
-            obj.keyframe_insert("rotation_euler", frame=at)
+            obj.keyframe_insert(channel, frame=at)
     if focal_length is not None:
         obj.data.lens = focal_length
         if keyframe:
