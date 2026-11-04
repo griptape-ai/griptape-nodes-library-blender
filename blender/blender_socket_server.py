@@ -10,6 +10,7 @@ Paste this script into Blender's Text Editor and run it.
 
 import json
 import logging
+import queue
 import socket
 import threading
 import time
@@ -36,6 +37,11 @@ class BlenderSocketServer:
         self.server_socket = None
         self.running = False
         self.server_thread = None
+        # bpy is not thread-safe: client threads enqueue requests here and the
+        # main thread executes them from a bpy.app.timers callback.
+        self.request_queue = queue.Queue()
+        # Blender matches timers by identity, so keep a single bound-method object.
+        self._queue_timer = self._process_queue
 
     def start(self):
         """Start the socket server"""
@@ -54,6 +60,8 @@ class BlenderSocketServer:
             self.server_socket.listen(5)
 
             self.running = True
+            if not bpy.app.timers.is_registered(self._queue_timer):
+                bpy.app.timers.register(self._queue_timer, persistent=True)
             self.server_thread = threading.Thread(target=self._run_server, daemon=True)
             self.server_thread.start()
 
@@ -79,7 +87,47 @@ class BlenderSocketServer:
             except:
                 pass
 
+        if bpy.app.timers.is_registered(self._queue_timer):
+            bpy.app.timers.unregister(self._queue_timer)
+        self._fail_pending_requests("Server stopped")
+
         logger.info("✓ Blender Socket Server stopped")
+
+    def _process_queue(self):
+        """Run queued requests on Blender's main thread (bpy.app.timers callback)."""
+        while True:
+            try:
+                request, done, holder = self.request_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                holder["response"] = self._process_request(request)
+            except BaseException as e:
+                # BaseException too: an escaping SystemExit would unregister this timer
+                holder["response"] = {"success": False, "error": f"Processing failed: {str(e)}"}
+            finally:
+                done.set()
+        return 0.05 if self.running else None
+
+    def _fail_pending_requests(self, error):
+        """Release client threads still waiting on requests that will never run."""
+        while True:
+            try:
+                _request, done, holder = self.request_queue.get_nowait()
+            except queue.Empty:
+                break
+            holder["response"] = {"success": False, "error": error}
+            done.set()
+
+    def _run_on_main_thread(self, request):
+        """Hand a request to the main thread and block until it has been processed."""
+        done = threading.Event()
+        holder = {}
+        self.request_queue.put((request, done, holder))
+        while not done.wait(timeout=0.5):
+            if not self.running or not bpy.app.timers.is_registered(self._queue_timer):
+                self._fail_pending_requests("Server stopped")
+        return holder["response"]
 
     def _run_server(self):
         """Main server loop"""
@@ -140,7 +188,7 @@ class BlenderSocketServer:
 
             # Process the request
             try:
-                response = self._process_request(request)
+                response = self._run_on_main_thread(request)
                 print(f"DEBUG SERVER: Response ready: {response.get('success', 'Unknown')}")
             except Exception as e:
                 print(f"DEBUG SERVER: Processing error: {e}")
