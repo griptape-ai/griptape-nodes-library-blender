@@ -21,11 +21,11 @@ COMPLEX_MAX_RESOLUTION = 512
 
 
 def list_cameras() -> dict:
-    """Describe every camera object in the file open in Blender."""
+    """Describe every camera object in the scene open in Blender."""
     scene = bpy.context.scene
     active = scene.camera.name if scene.camera else None
     cameras = []
-    for obj in bpy.data.objects:
+    for obj in scene.objects:
         if obj.type != "CAMERA":
             continue
         data = obj.data
@@ -143,12 +143,7 @@ def render_camera(camera: str, width: int, height: int) -> dict:
 
     The scene's settings are put back afterwards.
     """
-    obj = bpy.data.objects.get(camera)
-    if obj is None or obj.type != "CAMERA":
-        names = ", ".join(o.name for o in bpy.data.objects if o.type == "CAMERA")
-        msg = f"Camera '{camera}' not found in the scene. Cameras: {names or 'none'}."
-        raise ValueError(msg)
-
+    obj = _find_camera(camera)
     scene = bpy.context.scene
     render = scene.render
     complex_scene = (
