@@ -334,12 +334,6 @@ def test_no_blender_is_a_failure_the_failed_output_can_catch() -> None:
     assert "Could not reach Blender" in node.parameter_output_values["result_details"]
 
 
-def _node_with_failed(node: Any, port: int, *, failed_is_wired: bool) -> Any:
-    node.set_parameter_value("mcp_port", port)
-    node._has_outgoing_connections = lambda _parameter: failed_is_wired
-    return node
-
-
 def test_no_media_says_which_parameter_to_fill_in() -> None:
     node = image_to_camera_plane.BlenderImageToCameraPlane(name="Plane")
     node._has_outgoing_connections = lambda _parameter: False  # type: ignore[method-assign]
