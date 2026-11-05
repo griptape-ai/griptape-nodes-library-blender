@@ -1,5 +1,5 @@
 import base64
-import json
+import weakref
 
 import blender_mcp_client
 import camera_choices
@@ -16,8 +16,8 @@ MIN_IMAGE_BYTES = 100
 
 
 class BlenderCameraCapture(ControlNode):
-    # Class-level registry to track all instances
-    _instances = []
+    # Every capture node, so a Camera List can refresh all their dropdowns. Dropped nodes fall out on their own.
+    _instances = weakref.WeakSet()
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -27,7 +27,7 @@ class BlenderCameraCapture(ControlNode):
         self.metadata["dependencies"] = {}
 
         # Register this instance
-        BlenderCameraCapture._instances.append(self)
+        BlenderCameraCapture._instances.add(self)
 
         with ParameterGroup(name="Blender", collapsed=True) as blender_group:
             ParameterInt(
@@ -54,7 +54,7 @@ class BlenderCameraCapture(ControlNode):
 
         options_trait = Options(choices=available_cameras)
 
-        self.camera_param = Parameter(
+        camera_param = Parameter(
             name="camera_name",
             input_types=["str"],
             output_type="str",
@@ -66,7 +66,7 @@ class BlenderCameraCapture(ControlNode):
             ui_options={"display_name": "Camera"},
         )
 
-        self.add_parameter(self.camera_param)
+        self.add_parameter(camera_param)
 
         # Camera metadata label parameters (read-only, displayed under camera selection)
         self.add_parameter(
@@ -223,12 +223,12 @@ class BlenderCameraCapture(ControlNode):
         """The PNG in Blender's reply, or a NodeError saying what is wrong with it."""
         image_b64 = render_result.get("image")
         if not image_b64:
-            msg = "Blender returned no image data."
+            msg = "Blender returned no image data. Run the node again. If it keeps happening, check Blender's console for errors."
             raise NodeError(msg, response={key: value for key, value in render_result.items() if key != "image"})
         try:
             image_data = base64.b64decode(image_b64)
         except ValueError as e:
-            msg = "Could not decode the image data from Blender."
+            msg = "Could not decode the image data from Blender. Run the node again."
             raise NodeError(msg) from e
         if len(image_data) < MIN_IMAGE_BYTES:
             msg = "The image data from Blender was empty or corrupted. Run the node again."
@@ -294,101 +294,43 @@ class BlenderCameraCapture(ControlNode):
                 pass
 
     @classmethod
-    def _update_all_camera_lists_with_names(cls, camera_names, skip_instance=None):
-        """Update camera lists for all instances with provided camera names."""
+    def _update_all_camera_lists_with_names(cls, camera_names):
+        """Offer `camera_names` on every capture node."""
         for instance in cls._instances:
-            if instance and instance != skip_instance:  # Skip the instance that was already updated
-                camera_choices.apply(instance, "camera_name", camera_names, camera_names[0])
-
-    def after_incoming_connection(self, source_node, source_parameter, target_parameter):
-        """Refresh camera list when connections are made."""
-        if target_parameter.name == "camera_name":
-            # Camera updates now handled by BlenderCameraList node via cameras_input
-            pass
-        elif target_parameter.name == "cameras_input":
-            # Camera list data will flow through this connection automatically
-            pass
+            camera_choices.apply(instance, "camera_name", camera_names, camera_names[0])
 
     def _update_camera_metadata_display(self):
-        """Update the camera metadata label parameters based on current selection and available data."""
-        camera_name = self.get_parameter_value("camera_name") or "Camera"
-        cameras_input = self.get_parameter_value("cameras_input")
+        """Show the selected camera's details, from the connected Camera List, in the label parameters."""
+        name = self.get_parameter_value("camera_name") or "Camera"
+        cameras = camera_choices.cameras_from_list(self.get_parameter_value("cameras_input"))
+        camera = next((c for c in cameras if c["name"] == name), None)
 
-        # Find the selected camera's data
-        camera_data = None
-        if cameras_input and hasattr(cameras_input, "value"):
-            for item in cameras_input.value:
-                if hasattr(item, "value"):
-                    try:
-                        parsed_data = json.loads(item.value)
-                        if parsed_data.get("name") == camera_name:
-                            camera_data = parsed_data
-                            break
-                    except (json.JSONDecodeError, AttributeError):
-                        continue
-
-        if camera_data and "focal_length" in camera_data:
-            # Enhanced camera data available - show detailed labels
-
-            # Status label
-            status_text = "✓ Active Scene Camera" if camera_data.get("active") else "Available Camera"
-            self.set_parameter_value("camera_status_label", status_text)
-
-            # Focal length label
-            focal_length = camera_data.get("focal_length", 50.0)
-            self.set_parameter_value("focal_length_label", f"{focal_length} mm")
-
-            # Sensor info label
-            sensor_w = camera_data.get("sensor_width", 36.0)
-            sensor_h = camera_data.get("sensor_height", 24.0)
-            sensor_fit = camera_data.get("sensor_fit", "AUTO")
-            cam_type = camera_data.get("type", "PERSP")
-            sensor_text = f"{sensor_w}×{sensor_h}mm, {sensor_fit}, {cam_type}"
-            self.set_parameter_value("sensor_info_label", sensor_text)
-
-            # Depth of field label - fix structure mismatch
-            dof = camera_data.get("depth_of_field", {})
-            if dof.get("enabled"):
-                focus_dist = dof.get("focus_distance", 10.0)
-                f_stop = dof.get("f_stop", 2.8)
-                dof_text = f"Enabled: {focus_dist}BU @ f/{f_stop}"
-            else:
-                dof_text = "Disabled"
-            self.set_parameter_value("dof_info_label", dof_text)
-
-            # Transform label
-            location = camera_data.get("location", {})
-            rotation = camera_data.get("rotation", {})
-            loc_text = f"({location.get('x', 0.0):.2f}, {location.get('y', 0.0):.2f}, {location.get('z', 0.0):.2f})"
-            rot_text = f"({rotation.get('x', 0.0):.2f}, {rotation.get('y', 0.0):.2f}, {rotation.get('z', 0.0):.2f})"
-            transform_text = f"Loc: {loc_text} Rot: {rot_text}"
-            self.set_parameter_value("transform_info_label", transform_text)
-
-        elif camera_data:
-            # Basic camera data available - show what we can
-            status_text = "✓ Active Scene Camera" if camera_data.get("active") else "Available Camera"
-            self.set_parameter_value("camera_status_label", status_text)
-
-            # Show basic location/rotation if available
-            location = camera_data.get("location", {})
-            rotation = camera_data.get("rotation", {})
-            if location and rotation:
-                loc_text = f"({location.get('x', 0.0):.2f}, {location.get('y', 0.0):.2f}, {location.get('z', 0.0):.2f})"
-                rot_text = f"({rotation.get('x', 0.0):.2f}, {rotation.get('y', 0.0):.2f}, {rotation.get('z', 0.0):.2f})"
-                transform_text = f"Loc: {loc_text} Rot: {rot_text}"
-                self.set_parameter_value("transform_info_label", transform_text)
-            else:
-                self.set_parameter_value("transform_info_label", "Basic data only")
-
-            # Set others to indicate limited data
-            self.set_parameter_value("focal_length_label", "Basic mode")
-            self.set_parameter_value("sensor_info_label", "Basic mode")
-            self.set_parameter_value("dof_info_label", "Basic mode")
-
+        if camera is None:
+            labels = {
+                "camera_status_label": "Connect BlenderCameraList for details",
+                "focal_length_label": "-",
+                "sensor_info_label": "-",
+                "dof_info_label": "-",
+                "transform_info_label": "-",
+            }
         else:
-            # No enhanced data - show placeholder values
-            self.set_parameter_value("camera_status_label", "Connect BlenderCameraList for details")
-            self.set_parameter_value("focal_length_label", "-")
-            self.set_parameter_value("sensor_info_label", "-")
-            self.set_parameter_value("dof_info_label", "-")
-            self.set_parameter_value("transform_info_label", "-")
+            dof = camera.get("depth_of_field", {})
+            location = camera.get("location", {})
+            rotation = camera.get("rotation", {})
+            sensor = f"{camera.get('sensor_width', 36.0)}×{camera.get('sensor_height', 24.0)}mm"
+            labels = {
+                "camera_status_label": "✓ Active Scene Camera" if camera.get("active") else "Available Camera",
+                "focal_length_label": f"{camera.get('focal_length', 50.0)} mm",
+                "sensor_info_label": f"{sensor}, {camera.get('sensor_fit', 'AUTO')}, {camera.get('type', 'PERSP')}",
+                "dof_info_label": (
+                    f"Enabled: {dof.get('focus_distance', 10.0)}BU @ f/{dof.get('f_stop', 2.8)}"
+                    if dof.get("enabled")
+                    else "Disabled"
+                ),
+                "transform_info_label": (
+                    f"Loc: ({location.get('x', 0.0):.2f}, {location.get('y', 0.0):.2f}, {location.get('z', 0.0):.2f}) "
+                    f"Rot: ({rotation.get('x', 0.0):.2f}, {rotation.get('y', 0.0):.2f}, {rotation.get('z', 0.0):.2f})"
+                ),
+            }
+        for parameter, text in labels.items():
+            self.set_parameter_value(parameter, text)

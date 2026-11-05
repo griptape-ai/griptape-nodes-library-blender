@@ -6,7 +6,7 @@ import blender_mcp_client
 import camera_plane_client
 from camera_plane_client import DEFAULT_NAME, FIT_CONTAIN, FIT_FILL, FIT_STRETCH
 from griptape.artifacts import ImageArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_types.parameter_bool import ParameterBool
 from griptape_nodes.exe_types.param_types.parameter_float import ParameterFloat
@@ -152,6 +152,8 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
 
     def _process(self) -> None:
         self._clear_execution_status()
+        # A run that fails must not leave the last run's values for a wired Failed output to pass on.
+        self.parameter_output_values.update({"camera_name": "", "plane_name_output": "", "media_path": ""})
         try:
             details = self._add()
         except Exception as e:
@@ -168,13 +170,13 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
             ).resolve()
         location = media if isinstance(media, str) else getattr(media, "value", None)
         if not isinstance(location, str) or not location:
-            msg = "Connect an image or a movie."
-            raise ValueError(msg)
+            msg = "Connect an image or a movie to 'Image or Movie'."
+            raise NodeError(msg)
         resolved = File(location).resolve()
         if not is_remote(resolved):
             if not Path(resolved).is_file():
-                msg = f"The file {resolved} does not exist."
-                raise FileNotFoundError(msg)
+                msg = f"The file {resolved} does not exist. Check the file connected to 'Image or Movie'."
+                raise NodeError(msg)
             return resolved
         suffix = Path(urlparse(resolved).path).suffix or ".png"
         content = File(resolved).read_bytes()

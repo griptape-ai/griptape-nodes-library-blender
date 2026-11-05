@@ -4,7 +4,7 @@ import blender_mcp_client
 import camera_plane_client
 from griptape.artifacts import ImageUrlArtifact
 from griptape.artifacts.video_url_artifact import VideoUrlArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_types.parameter_float import ParameterFloat
 from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
@@ -118,6 +118,10 @@ class BlenderGetCameraPlane(SuccessFailureNode):
 
     def _process(self) -> None:
         self._clear_execution_status()
+        # A run that fails must not leave the last run's values for a wired Failed output to pass on.
+        self.parameter_output_values.update(
+            {"image": None, "video": None, "plane_name": "", "camera_name": "", "distance": None, "media_path": ""}
+        )
         try:
             details = self._get()
         except Exception as e:
@@ -138,8 +142,11 @@ class BlenderGetCameraPlane(SuccessFailureNode):
 
         path = Path(found["path"])
         if not path.is_file():
-            msg = f"Blender has the file at {path}, but it is not on this machine."
-            raise FileNotFoundError(msg)
+            msg = (
+                f"Blender has the file at {path}, but this machine can't read it. "
+                "Run Blender on this machine, or copy the file here and run the node again."
+            )
+            raise NodeError(msg, fields={"path": str(path)})
         is_movie = found["source"] in MOVIE_SOURCES
         content = path.read_bytes()
         saved = save_project_file(self.name, hashed_filename("camera_plane", content, path.suffix or ".png"), content)

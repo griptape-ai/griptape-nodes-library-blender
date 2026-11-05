@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import blender_mcp_client
+from griptape_nodes.exe_types.core_types import NodeError
 
 BLENDER_SCRIPT = Path(__file__).parent / "trace_grease_pencil.py"
 SCENE_SCRIPT = Path(__file__).parent / "grease_pencil_scene.py"
@@ -119,8 +120,8 @@ def trace_job(
 ) -> dict[str, Any]:
     """The JSON job `trace_grease_pencil.py` reads."""
     if not images:
-        msg = "There are no images to trace."
-        raise ValueError(msg)
+        msg = "Connect at least one image to 'Images'."
+        raise NodeError(msg)
     if settings.mode not in (MODE_ANIMATED, MODE_SEPARATE):
         msg = f"Mode must be {MODE_ANIMATED} or {MODE_SEPARATE}, not {settings.mode}."
         raise ValueError(msg)
@@ -177,8 +178,8 @@ def run_trace(blender: str, job: dict[str, Any]) -> dict[str, Any]:
         succeeded = any(line.startswith(SUCCESS_MARKER) for line in (done.stdout or "").splitlines())
         if done.returncode != 0 or not succeeded or not result_file.is_file():
             tail = "\n".join(((done.stderr or "") + "\n" + (done.stdout or "")).strip().splitlines()[-12:])
-            msg = f"Blender could not trace the images (exit code {done.returncode}).\n{tail}"
-            raise RuntimeError(msg)
+            msg = "Blender could not trace the images. The end of its output is under More info."
+            raise NodeError(msg, fields={"exit_code": done.returncode}, response={"output": tail})
         return json.loads(result_file.read_text(encoding="utf-8"))
 
 

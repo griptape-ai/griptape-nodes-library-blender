@@ -16,7 +16,7 @@ from grease_pencil_trace import (
     trace_job,
 )
 from griptape.artifacts import ImageArtifact, ImageUrlArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterList, ParameterMode
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterList, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
 from griptape_nodes.exe_types.param_types.parameter_bool import ParameterBool
@@ -345,6 +345,18 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
 
     def _process(self) -> None:
         self._clear_execution_status()
+        # A run that fails must not leave the last run's values for a wired Failed output to pass on.
+        self.parameter_output_values.update(
+            {
+                "preview": None,
+                "previews": [],
+                "contact_sheet": None,
+                "animation": None,
+                "blend_path": "",
+                "object_name_output": "",
+                "layer_name_output": "",
+            }
+        )
         try:
             details = self._trace()
         except Exception as e:
@@ -404,8 +416,8 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         placement = self._placement()
         target_blend = (self.get_parameter_value("target_blend") or "").strip()
         if target_blend and not Path(target_blend).expanduser().is_file():
-            msg = f"The target .blend {target_blend} does not exist."
-            raise FileNotFoundError(msg)
+            msg = f"The file in 'Target .blend' does not exist: {target_blend}. Choose an existing .blend, or clear it to skip."
+            raise NodeError(msg)
         blender = find_blender(self.get_parameter_value("blender_path") or "")
 
         with tempfile.TemporaryDirectory(prefix="gtn_grease_pencil_") as folder:

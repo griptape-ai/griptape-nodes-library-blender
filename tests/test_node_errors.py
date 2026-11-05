@@ -20,10 +20,14 @@ import blender_mcp_client
 import camera_capture
 import camera_choices
 import camera_list
+import get_camera_plane
+import image_to_camera_plane
 import pytest
+import set_camera
 import set_frame
 from griptape.artifacts import ListArtifact
 from griptape_nodes.exe_types.core_types import NodeError
+from griptape_nodes.exe_types.node_types import NodeResolutionState
 
 LIBRARY_DIR = Path(__file__).resolve().parent.parent / "blender"
 PNG = base64.b64encode(b"x" * 200).decode()
@@ -180,7 +184,11 @@ async def test_a_render_error_from_blender_fails_the_node_with_the_reason(blende
 @pytest.mark.parametrize(
     ("result", "message"),
     [
-        pytest.param({"width": 64}, "Blender returned no image data.", id="no-image"),
+        pytest.param(
+            {"width": 64},
+            "Blender returned no image data. Run the node again. If it keeps happening, check Blender's console for errors.",
+            id="no-image",
+        ),
         pytest.param(
             {"image": base64.b64encode(b"tiny").decode()},
             "The image data from Blender was empty or corrupted. Run the node again.",
@@ -202,7 +210,7 @@ async def test_unusable_image_data_fails_the_node(blender: BlenderFactory, resul
 async def test_undecodable_image_data_fails_the_node_and_keeps_the_cause(blender: BlenderFactory) -> None:
     node = _capture(blender(_ok({"image": "abc"})))
 
-    with pytest.raises(NodeError, match="Could not decode the image data from Blender") as raised:
+    with pytest.raises(NodeError, match="Could not decode the image data from Blender. Run the node again.") as raised:
         await node.aprocess()
 
     assert raised.value.__cause__ is not None
@@ -326,6 +334,135 @@ def test_no_blender_is_a_failure_the_failed_output_can_catch() -> None:
 
     assert node.parameter_output_values["was_successful"] is False
     assert "Could not reach Blender" in node.parameter_output_values["result_details"]
+
+
+def _node_with_failed(node: Any, port: int, *, failed_is_wired: bool) -> Any:
+    node.set_parameter_value("mcp_port", port)
+    node._has_outgoing_connections = lambda _parameter: failed_is_wired
+    return node
+
+
+@pytest.mark.parametrize(
+    ("make_node", "stale"),
+    [
+        pytest.param(
+            lambda: set_camera.BlenderSetCamera(name="Camera"),
+            {"camera_name": "Old Camera"},
+            id="set-camera",
+        ),
+        pytest.param(
+            lambda: set_frame.BlenderSetFrame(name="Frame"),
+            {"current_frame": 12},
+            id="set-frame",
+        ),
+        pytest.param(
+            lambda: get_camera_plane.BlenderGetCameraPlane(name="Get"),
+            {"plane_name": "Old Plane", "camera_name": "Old Camera", "distance": 3.0, "media_path": "/old.png"},
+            id="get-camera-plane",
+        ),
+    ],
+)
+def test_a_failed_run_does_not_leave_the_last_runs_outputs(
+    blender: BlenderFactory, make_node: Callable[[], Any], stale: dict[str, Any]
+) -> None:
+    node = _node_with_failed(make_node(), blender(_error("ValueError: nothing here")), failed_is_wired=True)
+    if node.get_parameter_by_name("set_location"):
+        node.set_parameter_value("set_location", True)  # Set Camera refuses to run with nothing to change
+    node.parameter_output_values.update(stale)
+
+    node._process()
+
+    assert node.parameter_output_values["was_successful"] is False
+    for name in stale:
+        assert node.parameter_output_values[name] in ("", None)
+
+
+def test_no_media_says_which_parameter_to_fill_in() -> None:
+    node = image_to_camera_plane.BlenderImageToCameraPlane(name="Plane")
+    node._has_outgoing_connections = lambda _parameter: False  # type: ignore[method-assign]
+
+    with pytest.raises(NodeError, match="Connect an image or a movie to 'Image or Movie'"):
+        node._process()
+
+
+def test_a_missing_file_says_which_parameter_to_check() -> None:
+    node = image_to_camera_plane.BlenderImageToCameraPlane(name="Plane")
+    node._has_outgoing_connections = lambda _parameter: False  # type: ignore[method-assign]
+    node.set_parameter_value("media", "/no/such/file.png")
+
+    with pytest.raises(NodeError, match=r"does not exist\. Check the file connected to 'Image or Movie'"):
+        node._process()
+
+
+# ---- Camera List always reads Blender again -----------------------------------------------------------------------
+
+
+def test_camera_list_is_made_unresolved_before_each_run(blender: BlenderFactory) -> None:
+    node = _list(blender(_ok(ONE_CAMERA)))
+    node.state = NodeResolutionState.RESOLVED
+
+    assert node.validate_before_node_run() is None
+    assert node.state == NodeResolutionState.UNRESOLVED
+
+    node.state = NodeResolutionState.RESOLVED
+    assert node.validate_before_workflow_run() is None
+    assert node.state == NodeResolutionState.UNRESOLVED
+
+
+# ---- Camera Capture's labels --------------------------------------------------------------------------------------
+
+
+def _cameras_artifact(*cameras: dict[str, Any]) -> ListArtifact:
+    from griptape.artifacts import TextArtifact
+
+    return ListArtifact([TextArtifact(json.dumps(camera)) for camera in cameras])
+
+
+def test_the_labels_show_the_selected_cameras_details() -> None:
+    node = camera_capture.BlenderCameraCapture(name="Capture")
+    camera = {
+        "name": "Shot_A",
+        "active": True,
+        "focal_length": 35.0,
+        "sensor_width": 36.0,
+        "sensor_height": 24.0,
+        "sensor_fit": "AUTO",
+        "type": "PERSP",
+        "depth_of_field": {"enabled": True, "focus_distance": 4.0, "f_stop": 2.0},
+        "location": {"x": 1.0, "y": 2.0, "z": 3.0},
+        "rotation": {"x": 0.0, "y": 0.0, "z": 0.5},
+    }
+    node.set_parameter_value("cameras_input", _cameras_artifact(camera))
+    node.set_parameter_value("camera_name", "Shot_A")
+
+    node._update_camera_metadata_display()
+
+    assert node.get_parameter_value("camera_status_label") == "✓ Active Scene Camera"
+    assert node.get_parameter_value("focal_length_label") == "35.0 mm"
+    assert node.get_parameter_value("sensor_info_label") == "36.0×24.0mm, AUTO, PERSP"
+    assert node.get_parameter_value("dof_info_label") == "Enabled: 4.0BU @ f/2.0"
+    assert node.get_parameter_value("transform_info_label") == "Loc: (1.00, 2.00, 3.00) Rot: (0.00, 0.00, 0.50)"
+
+
+def test_the_labels_say_to_connect_a_camera_list_when_there_is_none() -> None:
+    node = camera_capture.BlenderCameraCapture(name="Capture")
+
+    node._update_camera_metadata_display()
+
+    assert node.get_parameter_value("camera_status_label") == "Connect BlenderCameraList for details"
+    assert node.get_parameter_value("focal_length_label") == "-"
+
+
+def test_a_dropped_capture_node_leaves_the_registry() -> None:
+    import gc
+
+    node = camera_capture.BlenderCameraCapture(name="Temporary")
+    assert node in camera_capture.BlenderCameraCapture._instances
+
+    del node
+    gc.collect()
+
+    assert all(instance.name != "Temporary" for instance in camera_capture.BlenderCameraCapture._instances)
 
 
 # ---- Loading ------------------------------------------------------------------------------------------------------

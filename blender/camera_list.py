@@ -4,15 +4,13 @@ import blender_mcp_client
 import camera_client
 from griptape.artifacts import ListArtifact, TextArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
-from griptape_nodes.exe_types.node_types import ControlNode
+from griptape_nodes.exe_types.node_types import ControlNode, NodeResolutionState
 from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
 from griptape_nodes.retained_mode.griptape_nodes import logger
 
 
 class BlenderCameraList(ControlNode):
     def __init__(self, **kwargs) -> None:
-        # Initialize private state variable
-        self._internal_state = None
         super().__init__(**kwargs)
         self.category = "Blender"
         self.description = "Lists all available cameras in the scene open in Blender."
@@ -62,11 +60,6 @@ class BlenderCameraList(ControlNode):
             )
         )
 
-    @property
-    def always_run(self) -> bool:
-        """Force this node to always run to get fresh camera data."""
-        return True
-
     def _fetch_cameras(self) -> tuple[list[dict], str]:
         """Fetch the cameras from the scene open in Blender, and a status message to show."""
         found = camera_client.list_cameras(port=int(self.get_parameter_value("mcp_port")))
@@ -113,17 +106,19 @@ class BlenderCameraList(ControlNode):
             for camera in cameras
         ]
 
+    def _reset_resolution_state(self) -> None:
+        """Mark the node unresolved, so the engine reads the cameras again each run instead of reusing its last answer."""
+        self.make_node_unresolved(
+            current_states_to_trigger_change_event={NodeResolutionState.RESOLVED, NodeResolutionState.RESOLVING}
+        )
+
     def validate_before_workflow_run(self) -> list[Exception] | None:
-        """Reset node state to ensure it always re-evaluates in workflows."""
-        # Clear any cached output values to force re-evaluation
-        self.parameter_output_values.clear()
+        self._reset_resolution_state()
         return None
 
-    def initialize_spotlight(self) -> None:
-        """Override to ensure this node always re-evaluates to get fresh camera data."""
-        # By overriding this method to do nothing, we prevent the default
-        # dependency resolution that might cache this node's results
-        pass
+    def validate_before_node_run(self) -> list[Exception] | None:
+        self._reset_resolution_state()
+        return None
 
     def process(self):
         """Fetch and list all cameras from the Blender scene."""
