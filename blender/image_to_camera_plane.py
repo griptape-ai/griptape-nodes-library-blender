@@ -6,7 +6,7 @@ import blender_mcp_client
 import camera_plane_client
 from camera_plane_client import DEFAULT_NAME, FIT_CONTAIN, FIT_FILL, FIT_STRETCH
 from griptape.artifacts import ImageArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_types.parameter_bool import ParameterBool
 from griptape_nodes.exe_types.param_types.parameter_float import ParameterFloat
@@ -168,13 +168,13 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
             ).resolve()
         location = media if isinstance(media, str) else getattr(media, "value", None)
         if not isinstance(location, str) or not location:
-            msg = "Connect an image or a movie."
-            raise ValueError(msg)
+            msg = "Connect an image or a movie to 'Image or Movie'."
+            raise NodeError(msg)
         resolved = File(location).resolve()
         if not is_remote(resolved):
             if not Path(resolved).is_file():
-                msg = f"The file {resolved} does not exist."
-                raise FileNotFoundError(msg)
+                msg = f"The file {resolved} does not exist. Check the file connected to 'Image or Movie'."
+                raise NodeError(msg)
             return resolved
         suffix = Path(urlparse(resolved).path).suffix or ".png"
         content = File(resolved).read_bytes()
@@ -184,20 +184,16 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
         value = self.get_parameter_value
         path = self._media_file(value("media"))
         name = (value("plane_name") or DEFAULT_NAME).strip()
-        try:
-            placed = camera_plane_client.add_camera_plane(
-                path,
-                camera=(value("camera") or "").strip(),
-                scene=(value("scene") or "").strip(),
-                distance=float(value("distance")),
-                fit=FIT_LABELS.get(value("fit"), FIT_FILL),
-                name=name,
-                replace=bool(value("replace")),
-                port=int(value("mcp_port")),
-            )
-        except blender_mcp_client.BlenderMCPError as e:
-            msg = f"Could not add the plane in Blender.\n{e}"
-            raise blender_mcp_client.BlenderMCPError(msg) from e
+        placed = camera_plane_client.add_camera_plane(
+            path,
+            camera=(value("camera") or "").strip(),
+            scene=(value("scene") or "").strip(),
+            distance=float(value("distance")),
+            fit=FIT_LABELS.get(value("fit"), FIT_FILL),
+            name=name,
+            replace=bool(value("replace")),
+            port=int(value("mcp_port")),
+        )
         self.parameter_output_values["camera_name"] = placed["camera"]
         self.parameter_output_values["plane_name_output"] = placed["plane"]
         self.parameter_output_values["media_path"] = placed["path"]

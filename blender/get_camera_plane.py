@@ -4,7 +4,7 @@ import blender_mcp_client
 import camera_plane_client
 from griptape.artifacts import ImageUrlArtifact
 from griptape.artifacts.video_url_artifact import VideoUrlArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_types.parameter_float import ParameterFloat
 from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
@@ -128,22 +128,21 @@ class BlenderGetCameraPlane(SuccessFailureNode):
 
     def _get(self) -> str:
         value = self.get_parameter_value
-        try:
-            found = camera_plane_client.get_camera_plane(
-                camera=(value("camera") or "").strip(),
-                scene=(value("scene") or "").strip(),
-                # Where Blender saves an image that has no file of its own, such as one packed in the .blend.
-                export_path=str(project_path(self.name, "camera_plane_export.png")),
-                port=int(value("mcp_port")),
-            )
-        except blender_mcp_client.BlenderMCPError as e:
-            msg = f"Could not read the plane in Blender.\n{e}"
-            raise blender_mcp_client.BlenderMCPError(msg) from e
+        found = camera_plane_client.get_camera_plane(
+            camera=(value("camera") or "").strip(),
+            scene=(value("scene") or "").strip(),
+            # Where Blender saves an image that has no file of its own, such as one packed in the .blend.
+            export_path=str(project_path(self.name, "camera_plane_export.png")),
+            port=int(value("mcp_port")),
+        )
 
         path = Path(found["path"])
         if not path.is_file():
-            msg = f"Blender has the file at {path}, but it is not on this machine."
-            raise FileNotFoundError(msg)
+            msg = (
+                f"Blender has the file at {path}, but this machine can't read it. "
+                "Run Blender on this machine, or copy the file here and run the node again."
+            )
+            raise NodeError(msg, fields={"path": str(path)})
         is_movie = found["source"] in MOVIE_SOURCES
         content = path.read_bytes()
         saved = save_project_file(self.name, hashed_filename("camera_plane", content, path.suffix or ".png"), content)

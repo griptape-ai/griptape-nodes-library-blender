@@ -16,7 +16,7 @@ from grease_pencil_trace import (
     trace_job,
 )
 from griptape.artifacts import ImageArtifact, ImageUrlArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterList, ParameterMode
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterList, ParameterMode
 from griptape_nodes.exe_types.node_types import AsyncResult, SuccessFailureNode
 from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
 from griptape_nodes.exe_types.param_types.parameter_bool import ParameterBool
@@ -404,8 +404,8 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         placement = self._placement()
         target_blend = (self.get_parameter_value("target_blend") or "").strip()
         if target_blend and not Path(target_blend).expanduser().is_file():
-            msg = f"The target .blend {target_blend} does not exist."
-            raise FileNotFoundError(msg)
+            msg = f"The file in 'Target .blend' does not exist: {target_blend}. Choose an existing .blend, or clear it to skip."
+            raise NodeError(msg)
         blender = find_blender(self.get_parameter_value("blender_path") or "")
 
         with tempfile.TemporaryDirectory(prefix="gtn_grease_pencil_") as folder:
@@ -459,7 +459,9 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             except blender_mcp_client.BlenderMCPError as e:
                 # The previews and .blend outputs stay set, so the trace is still usable.
                 msg = f"Traced, but could not send it to the open Blender. Turn off 'Send to Open Scene' to skip.\n{e}"
-                raise blender_mcp_client.BlenderMCPError(msg) from e
+                raise blender_mcp_client.BlenderMCPError(
+                    msg, fields=e.fields, response=e.response, links=e.links
+                ) from e
             self._set_placed(placed)
             lines.append("Added to the scene open in Blender.")
 

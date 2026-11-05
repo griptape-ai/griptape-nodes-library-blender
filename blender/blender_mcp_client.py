@@ -12,27 +12,37 @@ import json
 import socket
 from typing import Any
 
+from griptape_nodes.exe_types.core_types import NodeError, NodeErrorLink
+
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 9876
 CONNECT_TIMEOUT_SECONDS = 5
 RESPONSE_TIMEOUT_SECONDS = 120
+ADDON_URL = "https://www.blender.org/lab/mcp-server/"
 
 
-class BlenderMCPError(RuntimeError):
-    """The open Blender could not be reached, or the code it ran failed."""
+class BlenderMCPError(NodeError):
+    """The open Blender could not be reached, or the code it ran failed.
+
+    It is a NodeError, so the editor shows the host and port, and Blender's reply, under More info.
+    """
 
 
 def execute(code: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str, Any]:
     """Run `code` in the open Blender and return the dict it assigned to `result`."""
     request = json.dumps({"type": "execute", "code": code, "strict_json": True}).encode("utf-8") + b"\0"
+    fields = {"host": host, "port": port}
     try:
         sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_SECONDS)
     except (OSError, socket.gaierror) as e:
         msg = (
             f"Could not reach Blender at {host}:{port}. In Blender, install the MCP add-on from Blender Lab, turn on "
-            "Preferences > System > Allow Online Access, and start the MCP server."
+            "Preferences > System > Allow Online Access, and start the MCP server. If it listens on another port, "
+            "set 'MCP Port' on the node."
         )
-        raise BlenderMCPError(msg) from e
+        raise BlenderMCPError(
+            msg, fields=fields, links=[NodeErrorLink(label="Blender Lab MCP add-on", url=ADDON_URL)]
+        ) from e
     try:
         with sock:
             sock.settimeout(RESPONSE_TIMEOUT_SECONDS)
@@ -45,17 +55,17 @@ def execute(code: str, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> di
                 buffer.extend(chunk)
     except TimeoutError as e:
         msg = f"Blender at {host}:{port} did not answer within {RESPONSE_TIMEOUT_SECONDS} seconds."
-        raise BlenderMCPError(msg) from e
+        raise BlenderMCPError(msg, fields=fields) from e
     except OSError as e:
         msg = f"Lost the connection to Blender at {host}:{port}: {e}"
-        raise BlenderMCPError(msg) from e
+        raise BlenderMCPError(msg, fields=fields) from e
 
     if b"\0" not in buffer:
         msg = f"Blender at {host}:{port} closed the connection without a complete answer."
-        raise BlenderMCPError(msg)
+        raise BlenderMCPError(msg, fields=fields)
     response = json.loads(bytes(buffer[: buffer.index(b"\0")]))
     if response.get("status") != "ok":
         lines = str(response.get("message", response)).strip().splitlines()
         msg = f"Blender reported an error: {lines[-1] if lines else response}"
-        raise BlenderMCPError(msg)
+        raise BlenderMCPError(msg, fields=fields, response=response)
     return response.get("result") or {}

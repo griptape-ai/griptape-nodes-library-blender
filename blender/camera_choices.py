@@ -12,17 +12,22 @@ from griptape_nodes.traits.options import Options
 ACTIVE_CAMERA = "Active camera"
 
 
-def names_from_list(cameras: Any) -> list[str]:
-    """The camera names in the output of Camera List, which is a list of text artifacts holding JSON."""
-    names = []
+def cameras_from_list(cameras: Any) -> list[dict[str, Any]]:
+    """The cameras in the output of Camera List, which is a list of text artifacts holding JSON."""
+    found = []
     for item in getattr(cameras, "value", None) or []:
         try:
-            name = json.loads(item.value).get("name")
+            camera = json.loads(item.value)
         except (AttributeError, TypeError, json.JSONDecodeError):
             continue
-        if name:
-            names.append(name)
-    return names
+        if isinstance(camera, dict) and camera.get("name"):
+            found.append(camera)
+    return found
+
+
+def names_from_list(cameras: Any) -> list[str]:
+    """The camera names in the output of Camera List."""
+    return [camera["name"] for camera in cameras_from_list(cameras)]
 
 
 def fetch_names(port: int = blender_mcp_client.DEFAULT_PORT) -> list[str]:
