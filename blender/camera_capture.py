@@ -4,13 +4,15 @@ import json
 import blender_mcp_client
 import camera_choices
 import camera_client
-from griptape.artifacts import ErrorArtifact, ImageUrlArtifact
-from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
+from griptape.artifacts import ImageUrlArtifact
+from griptape_nodes.exe_types.core_types import NodeError, Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import ControlNode
 from griptape_nodes.exe_types.param_components.project_file_parameter import ProjectFileParameter
 from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
-from griptape_nodes.retained_mode.griptape_nodes import logger
 from griptape_nodes.traits.options import Options
+
+# A real PNG is far larger. Anything smaller means Blender sent something that is not an image.
+MIN_IMAGE_BYTES = 100
 
 
 class BlenderCameraCapture(ControlNode):
@@ -216,95 +218,58 @@ class BlenderCameraCapture(ControlNode):
 
         return None
 
-    async def aprocess(self) -> None:
-        await self._process()
-
-    async def _process(self) -> None:
-        """Capture a frame from the specified Blender camera."""
+    @staticmethod
+    def _image_bytes(render_result: dict) -> bytes:
+        """The PNG in Blender's reply, or a NodeError saying what is wrong with it."""
+        image_b64 = render_result.get("image")
+        if not image_b64:
+            msg = "Blender returned no image data."
+            raise NodeError(msg, response={key: value for key, value in render_result.items() if key != "image"})
         try:
-            # Get parameters
-            camera_name = self.get_parameter_value("camera_name") or "Camera"
-            output_format = self.get_parameter_value("output_format") or "PNG"
-            resolution_x = self.get_parameter_value("resolution_x") or 1920
-            resolution_y = self.get_parameter_value("resolution_y") or 1080
+            image_data = base64.b64decode(image_b64)
+        except ValueError as e:
+            msg = "Could not decode the image data from Blender."
+            raise NodeError(msg) from e
+        if len(image_data) < MIN_IMAGE_BYTES:
+            msg = "The image data from Blender was empty or corrupted. Run the node again."
+            raise NodeError(msg)
+        return image_data
 
-            # If a Camera List is connected, the camera must be one it found
-            names = camera_choices.names_from_list(self.get_parameter_value("cameras_input"))
-            if names and camera_name not in names:
-                camera_name = names[0]
+    async def aprocess(self) -> None:
+        """Capture a frame from the specified Blender camera."""
+        camera_name = self.get_parameter_value("camera_name") or "Camera"
+        output_format = self.get_parameter_value("output_format") or "PNG"
+        resolution_x = self.get_parameter_value("resolution_x") or 1920
+        resolution_y = self.get_parameter_value("resolution_y") or 1080
 
-            # Update camera metadata display
-            self._update_camera_metadata_display()
+        # If a Camera List is connected, the camera must be one it found
+        names = camera_choices.names_from_list(self.get_parameter_value("cameras_input"))
+        if names and camera_name not in names:
+            camera_name = names[0]
 
-            # Update status
-            self.parameter_output_values["status_output"] = f"Capturing frame from camera '{camera_name}'..."
+        self._update_camera_metadata_display()
+        self.parameter_output_values["status_output"] = f"Capturing frame from camera '{camera_name}'..."
 
-            # Render in the open Blender
-            try:
-                render_result = camera_client.render_camera(
-                    camera_name,
-                    resolution_x,
-                    resolution_y,
-                    port=int(self.get_parameter_value("mcp_port")),
-                )
-            except Exception as e:
-                error_msg = f"Render operation failed or timed out: {str(e)}"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
-
-            image_b64 = render_result.get("image")
-            if not image_b64:
-                error_msg = "No image data received from Blender"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
-
-            # Decode base64 image data
-            try:
-                image_data = base64.b64decode(image_b64)
-            except Exception as decode_error:
-                error_msg = f"Failed to decode image data: {str(decode_error)}"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
-
-            # Validate image data
-            if not image_data or len(image_data) < 100:
-                error_msg = "Received empty or corrupted image data"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
-
-            # Save image
-            try:
-                dest = self._output_file.build_file()
-                saved = dest.write_bytes(image_data)
-            except Exception as save_error:
-                error_msg = f"Failed to save image: {str(save_error)}"
-                self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-                self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
-                return
-
-            # Create ImageUrlArtifact and set output
-            image_artifact = ImageUrlArtifact(value=saved.location)
-            self.parameter_output_values["image_output"] = image_artifact
-
-            # Update status with success info
-            render_time = render_result.get("render_time", 0)
-            engine = "BLENDER_WORKBENCH"  # We know this from the render code
-            actual_width = render_result.get("width", resolution_x)
-            actual_height = render_result.get("height", resolution_y)
-
-            status_msg = f"Successfully captured {actual_width}x{actual_height} {output_format} image from camera '{camera_name}'\n"
-            status_msg += f"Render time: {render_time:.2f}s, Engine: {engine}"
-            self.parameter_output_values["status_output"] = status_msg
-
+        try:
+            render_result = camera_client.render_camera(
+                camera_name,
+                resolution_x,
+                resolution_y,
+                port=int(self.get_parameter_value("mcp_port")),
+            )
+            saved = self._output_file.build_file().write_bytes(self._image_bytes(render_result))
         except Exception as e:
-            error_msg = f"Failed to capture frame: {str(e)}"
-            logger.error(f"BlenderCameraCapture error: {error_msg}")
-            self.parameter_output_values["status_output"] = f"Error: {error_msg}"
-            self.parameter_output_values["image_output"] = ErrorArtifact(error_msg)
+            self.parameter_output_values["status_output"] = f"Error: {e}"
+            raise
+
+        self.parameter_output_values["image_output"] = ImageUrlArtifact(value=saved.location)
+        render_time = render_result.get("render_time", 0)
+        actual_width = render_result.get("width", resolution_x)
+        actual_height = render_result.get("height", resolution_y)
+        self.parameter_output_values["status_output"] = (
+            f"Successfully captured {actual_width}x{actual_height} {output_format} image from camera '{camera_name}'\n"
+            f"Render time: {render_time:.2f}s, Engine: BLENDER_WORKBENCH"
+        )
 
     def after_value_set(self, parameter, value):
         """Update camera choices when cameras_input receives new data."""

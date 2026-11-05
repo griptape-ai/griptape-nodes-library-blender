@@ -2,7 +2,7 @@ import json
 
 import blender_mcp_client
 import camera_client
-from griptape.artifacts import ErrorArtifact, ListArtifact, TextArtifact
+from griptape.artifacts import ListArtifact, TextArtifact
 from griptape_nodes.exe_types.core_types import Parameter, ParameterGroup, ParameterMode
 from griptape_nodes.exe_types.node_types import ControlNode
 from griptape_nodes.exe_types.param_types.parameter_int import ParameterInt
@@ -127,50 +127,34 @@ class BlenderCameraList(ControlNode):
 
     def process(self):
         """Fetch and list all cameras from the Blender scene."""
+        self.parameter_output_values["status_output"] = "Fetching cameras from Blender..."
         try:
-            # Update status
-            self.parameter_output_values["status_output"] = "Fetching cameras from Blender..."
-
-            # Fetch cameras from Blender
             cameras, status_msg = self._fetch_cameras()
-
-            if cameras:
-                # Format camera information
-                formatted_cameras = self._format_camera_info(cameras)
-
-                # Convert camera dictionaries to TextArtifacts for ListArtifact
-                camera_artifacts = []
-                for camera in formatted_cameras:
-                    camera_json = json.dumps(camera, indent=2)
-                    camera_artifact = TextArtifact(value=camera_json, name=f"camera_{camera['name']}")
-                    camera_artifacts.append(camera_artifact)
-
-                # Update outputs
-                self.parameter_output_values["camera_count"] = len(formatted_cameras)
-                self.parameter_output_values["status_output"] = status_msg
-
-                # Create detailed camera list artifact
-                self.parameter_output_values["cameras_output"] = ListArtifact(camera_artifacts, name="blender_cameras")
-
-                # Propagate camera names to all BlenderCameraCapture nodes to refresh their dropdowns
-                try:
-                    from camera_capture import BlenderCameraCapture
-
-                    camera_names = [cam["name"] for cam in formatted_cameras]
-                    BlenderCameraCapture._update_all_camera_lists_with_names(camera_names)
-                except Exception as e:
-                    # Non-fatal if capture class isn't loaded yet
-                    logger.debug(f"Camera list propagation skipped: {e}")
-
-            else:
-                # No cameras in the scene
-                self.parameter_output_values["camera_count"] = 0
-                self.parameter_output_values["status_output"] = status_msg
-                self.parameter_output_values["cameras_output"] = ListArtifact([])
-
         except Exception as e:
-            error_msg = f"Failed to list cameras: {str(e)}"
-            logger.error(f"BlenderCameraList error: {error_msg}")
-            self.parameter_output_values["status_output"] = f"Error: {error_msg}"
+            self.parameter_output_values["status_output"] = f"Error: {e}"
             self.parameter_output_values["camera_count"] = 0
-            self.parameter_output_values["cameras_output"] = ErrorArtifact(error_msg)
+            raise
+
+        self.parameter_output_values["status_output"] = status_msg
+        if not cameras:
+            # A scene with no cameras is not a failure
+            self.parameter_output_values["camera_count"] = 0
+            self.parameter_output_values["cameras_output"] = ListArtifact([])
+            return
+
+        formatted_cameras = self._format_camera_info(cameras)
+        camera_artifacts = [
+            TextArtifact(value=json.dumps(camera, indent=2), name=f"camera_{camera['name']}")
+            for camera in formatted_cameras
+        ]
+        self.parameter_output_values["camera_count"] = len(formatted_cameras)
+        self.parameter_output_values["cameras_output"] = ListArtifact(camera_artifacts, name="blender_cameras")
+
+        # Propagate camera names to all BlenderCameraCapture nodes to refresh their dropdowns
+        try:
+            from camera_capture import BlenderCameraCapture
+
+            BlenderCameraCapture._update_all_camera_lists_with_names([cam["name"] for cam in formatted_cameras])
+        except Exception as e:
+            # Non-fatal if capture class isn't loaded yet
+            logger.debug(f"Camera list propagation skipped: {e}")

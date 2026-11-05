@@ -128,17 +128,13 @@ class BlenderGetCameraPlane(SuccessFailureNode):
 
     def _get(self) -> str:
         value = self.get_parameter_value
-        try:
-            found = camera_plane_client.get_camera_plane(
-                camera=(value("camera") or "").strip(),
-                scene=(value("scene") or "").strip(),
-                # Where Blender saves an image that has no file of its own, such as one packed in the .blend.
-                export_path=str(project_path(self.name, "camera_plane_export.png")),
-                port=int(value("mcp_port")),
-            )
-        except blender_mcp_client.BlenderMCPError as e:
-            msg = f"Could not read the plane in Blender.\n{e}"
-            raise blender_mcp_client.BlenderMCPError(msg) from e
+        found = camera_plane_client.get_camera_plane(
+            camera=(value("camera") or "").strip(),
+            scene=(value("scene") or "").strip(),
+            # Where Blender saves an image that has no file of its own, such as one packed in the .blend.
+            export_path=str(project_path(self.name, "camera_plane_export.png")),
+            port=int(value("mcp_port")),
+        )
 
         path = Path(found["path"])
         if not path.is_file():

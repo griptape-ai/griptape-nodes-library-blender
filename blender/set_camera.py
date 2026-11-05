@@ -144,18 +144,14 @@ class BlenderSetCamera(SuccessFailureNode):
         if location is None and rotation is None and focal_length is None:
             msg = "Nothing to change. Turn on Set Location, Set Rotation or Set Focal Length."
             raise ValueError(msg)
-        try:
-            done = camera_client.set_camera(
-                camera="" if value("camera") in (None, "", camera_choices.ACTIVE_CAMERA) else value("camera").strip(),
-                location=location,
-                rotation_degrees=rotation,
-                focal_length=focal_length,
-                keyframe=bool(value("keyframe")),
-                port=int(value("mcp_port")),
-            )
-        except blender_mcp_client.BlenderMCPError as e:
-            msg = f"Could not change the camera in Blender.\n{e}"
-            raise blender_mcp_client.BlenderMCPError(msg) from e
+        done = camera_client.set_camera(
+            camera="" if value("camera") in (None, "", camera_choices.ACTIVE_CAMERA) else value("camera").strip(),
+            location=location,
+            rotation_degrees=rotation,
+            focal_length=focal_length,
+            keyframe=bool(value("keyframe")),
+            port=int(value("mcp_port")),
+        )
 
         self.parameter_output_values["camera_name"] = done["camera"]
         changed = [

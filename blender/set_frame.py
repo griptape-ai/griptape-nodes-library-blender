@@ -59,11 +59,7 @@ class BlenderSetFrame(SuccessFailureNode):
 
     def _set(self) -> str:
         value = self.get_parameter_value
-        try:
-            done = camera_client.set_frame(int(value("frame")), port=int(value("mcp_port")))
-        except blender_mcp_client.BlenderMCPError as e:
-            msg = f"Could not set the frame in Blender.\n{e}"
-            raise blender_mcp_client.BlenderMCPError(msg) from e
+        done = camera_client.set_frame(int(value("frame")), port=int(value("mcp_port")))
 
         self.parameter_output_values["current_frame"] = done["frame"]
         return f"Blender is on frame {done['frame']}. The scene runs from {done['frame_start']} to {done['frame_end']} at {done['fps']:g} fps."

@@ -184,20 +184,16 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
         value = self.get_parameter_value
         path = self._media_file(value("media"))
         name = (value("plane_name") or DEFAULT_NAME).strip()
-        try:
-            placed = camera_plane_client.add_camera_plane(
-                path,
-                camera=(value("camera") or "").strip(),
-                scene=(value("scene") or "").strip(),
-                distance=float(value("distance")),
-                fit=FIT_LABELS.get(value("fit"), FIT_FILL),
-                name=name,
-                replace=bool(value("replace")),
-                port=int(value("mcp_port")),
-            )
-        except blender_mcp_client.BlenderMCPError as e:
-            msg = f"Could not add the plane in Blender.\n{e}"
-            raise blender_mcp_client.BlenderMCPError(msg) from e
+        placed = camera_plane_client.add_camera_plane(
+            path,
+            camera=(value("camera") or "").strip(),
+            scene=(value("scene") or "").strip(),
+            distance=float(value("distance")),
+            fit=FIT_LABELS.get(value("fit"), FIT_FILL),
+            name=name,
+            replace=bool(value("replace")),
+            port=int(value("mcp_port")),
+        )
         self.parameter_output_values["camera_name"] = placed["camera"]
         self.parameter_output_values["plane_name_output"] = placed["plane"]
         self.parameter_output_values["media_path"] = placed["path"]

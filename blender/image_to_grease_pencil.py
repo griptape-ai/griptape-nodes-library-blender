@@ -459,7 +459,9 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             except blender_mcp_client.BlenderMCPError as e:
                 # The previews and .blend outputs stay set, so the trace is still usable.
                 msg = f"Traced, but could not send it to the open Blender. Turn off 'Send to Open Scene' to skip.\n{e}"
-                raise blender_mcp_client.BlenderMCPError(msg) from e
+                raise blender_mcp_client.BlenderMCPError(
+                    msg, fields=e.fields, response=e.response, links=e.links
+                ) from e
             self._set_placed(placed)
             lines.append("Added to the scene open in Blender.")
 
