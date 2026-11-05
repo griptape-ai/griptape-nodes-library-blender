@@ -7,3 +7,5 @@ blender/__pycache__/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+scripts/__pycache__/
+tests/**/__pycache__/
