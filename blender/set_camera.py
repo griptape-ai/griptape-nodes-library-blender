@@ -128,8 +128,6 @@ class BlenderSetCamera(SuccessFailureNode):
 
     def _process(self) -> None:
         self._clear_execution_status()
-        # A run that fails must not leave the last run's values for a wired Failed output to pass on.
-        self.parameter_output_values.update({"camera_name": ""})
         try:
             details = self._set()
         except Exception as e:

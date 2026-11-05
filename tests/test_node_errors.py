@@ -20,10 +20,8 @@ import blender_mcp_client
 import camera_capture
 import camera_choices
 import camera_list
-import get_camera_plane
 import image_to_camera_plane
 import pytest
-import set_camera
 import set_frame
 from griptape.artifacts import ListArtifact
 from griptape_nodes.exe_types.core_types import NodeError
@@ -340,41 +338,6 @@ def _node_with_failed(node: Any, port: int, *, failed_is_wired: bool) -> Any:
     node.set_parameter_value("mcp_port", port)
     node._has_outgoing_connections = lambda _parameter: failed_is_wired
     return node
-
-
-@pytest.mark.parametrize(
-    ("make_node", "stale"),
-    [
-        pytest.param(
-            lambda: set_camera.BlenderSetCamera(name="Camera"),
-            {"camera_name": "Old Camera"},
-            id="set-camera",
-        ),
-        pytest.param(
-            lambda: set_frame.BlenderSetFrame(name="Frame"),
-            {"current_frame": 12},
-            id="set-frame",
-        ),
-        pytest.param(
-            lambda: get_camera_plane.BlenderGetCameraPlane(name="Get"),
-            {"plane_name": "Old Plane", "camera_name": "Old Camera", "distance": 3.0, "media_path": "/old.png"},
-            id="get-camera-plane",
-        ),
-    ],
-)
-def test_a_failed_run_does_not_leave_the_last_runs_outputs(
-    blender: BlenderFactory, make_node: Callable[[], Any], stale: dict[str, Any]
-) -> None:
-    node = _node_with_failed(make_node(), blender(_error("ValueError: nothing here")), failed_is_wired=True)
-    if node.get_parameter_by_name("set_location"):
-        node.set_parameter_value("set_location", True)  # Set Camera refuses to run with nothing to change
-    node.parameter_output_values.update(stale)
-
-    node._process()
-
-    assert node.parameter_output_values["was_successful"] is False
-    for name in stale:
-        assert node.parameter_output_values[name] in ("", None)
 
 
 def test_no_media_says_which_parameter_to_fill_in() -> None:

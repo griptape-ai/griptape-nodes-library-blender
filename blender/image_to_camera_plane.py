@@ -152,8 +152,6 @@ class BlenderImageToCameraPlane(SuccessFailureNode):
 
     def _process(self) -> None:
         self._clear_execution_status()
-        # A run that fails must not leave the last run's values for a wired Failed output to pass on.
-        self.parameter_output_values.update({"camera_name": "", "plane_name_output": "", "media_path": ""})
         try:
             details = self._add()
         except Exception as e:

@@ -345,18 +345,6 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
 
     def _process(self) -> None:
         self._clear_execution_status()
-        # A run that fails must not leave the last run's values for a wired Failed output to pass on.
-        self.parameter_output_values.update(
-            {
-                "preview": None,
-                "previews": [],
-                "contact_sheet": None,
-                "animation": None,
-                "blend_path": "",
-                "object_name_output": "",
-                "layer_name_output": "",
-            }
-        )
         try:
             details = self._trace()
         except Exception as e:
