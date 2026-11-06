@@ -22,6 +22,7 @@ from skimage import measure, morphology
 SPUR_WIDTHS = 2.5  # a spur is also anything shorter than this many half-widths of the line it sits on
 SPUR_MIN = 6  # a free-ended branch into a junction shorter than this many pixels is a spur
 SPECK_MIN = 6  # an isolated piece shorter than this is noise, unless it is thick
+DOT_RATIO = 2.0  # a stub end at least this many times the typical line radius is a dot
 THICK_KEEP = 2.0  # a short piece at least this many pixels in radius is kept, as it is a dot rather than noise
 SOLID_REACH = 3  # a line ending this close to a solid area meets it
 MERGE_JUNCTIONS = 3  # junction pixels this close (in steps) belong to one crossing, such as the two ends of a thick X
@@ -30,7 +31,14 @@ STRAIGHT_COS = 0.70  # two branches join when their directions are at least abou
 DIRECTION_STEPS = 7  # how far along a branch to look for its direction
 SIMPLIFY_PX = 0.6
 SMOOTH_WINDOW = 5
-MIN_SOLID_RADIUS = 3
+RADIUS_SMOOTH_WINDOW = (
+    3  # the width is smoothed less than the position, so a short bulge such as a pupil keeps its peak
+)
+MIN_SOLID_RADIUS = 2
+MIN_RESOLUTION = 1500  # images with a shorter long side are scaled up to at least this before tracing
+SOLID_PERCENTILE = 99  # solid means wider than this share of the drawing's line length
+RIDGE_RADIUS = 3  # a dark feature narrower than about twice this many pixels is a line, not a fill
+RIDGE_CONTRAST = 0.5  # of the way from the threshold to white that a line must stand out from its surroundings
 MIN_WIDTH_PX = 0.8
 RADIUS_OFFSET = 0.0  # the distance transform of a line's center pixel reads half a pixel over its half width, which pads the stroke so fills do not show a sliver beside it
 PATH_ENDS = (0, 1)
@@ -45,19 +53,40 @@ class Centerlines:
     size: tuple[int, int]
     strokes: list[dict]
     solid: np.ndarray
+    ink: np.ndarray
 
-    def save(self, json_path: Path, solid_path: Path) -> None:
-        """Write the strokes to `json_path`. The solid areas go to `solid_path` as black on white, or are left out."""
+    def save(self, json_path: Path, solid_path: Path, ink_path: Path) -> None:
+        """Write the strokes to `json_path`. The solid areas and the ink go to PNGs as black on white, or are left out."""
         has_solid = bool(self.solid.any())
-        if has_solid:
-            picture = np.where(self.solid, 0, 255).astype(np.uint8)
-            Image.fromarray(picture).convert("RGB").save(solid_path)
-        content = {"size": list(self.size), "strokes": self.strokes, "solid": str(solid_path) if has_solid else ""}
+        has_ink = bool(self.ink.any())
+        for present, mask, path in ((has_solid, self.solid, solid_path), (has_ink, self.ink, ink_path)):
+            if present:
+                Image.fromarray(np.where(mask, 0, 255).astype(np.uint8)).convert("RGB").save(path)
+        content = {
+            "size": list(self.size),
+            "strokes": self.strokes,
+            "solid": str(solid_path) if has_solid else "",
+            "ink": str(ink_path) if has_ink else "",
+        }
         json_path.write_text(json.dumps(content), encoding="utf-8")
 
 
-def _load_ink(path: str, threshold: float, invert: bool, max_resolution: int) -> np.ndarray:
-    """The ink mask, built the way the Blender side builds it: flatten on white, invert, downscale, threshold."""
+def _working_size(width: int, height: int, min_resolution: int, max_resolution: int) -> tuple[int, int]:
+    """The size to trace at. Small images are scaled up, because lines a couple of pixels wide and pupils a few pixels
+    across are too coarse for thinning to follow. Large ones are scaled down to `max_resolution`."""
+    longest = max(width, height)
+    factor = 1.0
+    if min_resolution and longest < min_resolution:
+        factor = float(np.ceil(min_resolution / longest))
+    if max_resolution and longest * factor > max_resolution:
+        factor = max_resolution / longest
+    if factor == 1.0:
+        return width, height
+    return max(1, round(width * factor)), max(1, round(height * factor))
+
+
+def _load_ink(path: str, threshold: float, invert: bool, min_resolution: int, max_resolution: int) -> np.ndarray:
+    """The ink mask, built the way the Blender side builds it: flatten on white, invert, rescale, threshold."""
     with Image.open(path) as opened:
         rgba = opened.convert("RGBA")
     pixels = np.asarray(rgba, dtype=np.float32) / 255.0
@@ -66,14 +95,16 @@ def _load_ink(path: str, threshold: float, invert: bool, max_resolution: int) ->
     if invert:
         rgb = 1.0 - rgb
     picture = Image.fromarray(np.rint(rgb * 255).astype(np.uint8))
-    width, height = picture.size
-    longest = max(width, height)
-    if max_resolution and longest > max_resolution:
-        factor = max_resolution / longest
-        picture = picture.resize(
-            (max(1, round(width * factor)), max(1, round(height * factor))), Image.Resampling.BILINEAR
-        )
-    return np.asarray(picture).max(axis=2) < threshold * 255
+    size = _working_size(*picture.size, min_resolution, max_resolution)
+    if size != picture.size:
+        upscaling = size[0] > picture.width
+        picture = picture.resize(size, Image.Resampling.BICUBIC if upscaling else Image.Resampling.BILINEAR)
+    brightness = np.asarray(picture).max(axis=2).astype(np.float32) / 255.0
+    # Thin soft lines never get dark enough to pass the threshold, and raising it turns gray fills to ink. A thin dark
+    # ridge is much darker than its surroundings within a few pixels, which a wide gray fill is not, so a black
+    # top-hat (closing minus the image) finds the lines at any gray level.
+    ridge = ndimage.grey_closing(brightness, footprint=morphology.disk(RIDGE_RADIUS)) - brightness
+    return (brightness < threshold) | (ridge > (1.0 - threshold) * RIDGE_CONTRAST)
 
 
 def _degrees(skeleton: np.ndarray) -> np.ndarray:
@@ -104,12 +135,17 @@ def _redraw(paths: list[np.ndarray], shape: tuple[int, int]) -> np.ndarray:
 def _solid_areas(ink: np.ndarray, distance: np.ndarray) -> np.ndarray:
     """Pixels where a disk wider than the drawing's lines fits. The disk is sized from the lines themselves."""
     radii = distance[morphology.skeletonize(ink)] - 0.5
-    radius = max(MIN_SOLID_RADIUS, int(np.ceil(np.percentile(radii, 99) + 0.5)))
-    return ndimage.binary_opening(ink, structure=morphology.disk(radius))
+    radius = max(MIN_SOLID_RADIUS, int(np.ceil(np.percentile(radii, SOLID_PERCENTILE) + 0.5)))
+    solid = ndimage.binary_opening(ink, structure=morphology.disk(radius))
+    return solid
 
 
-def _prune(paths: list[np.ndarray], shape: tuple[int, int], distance: np.ndarray) -> list[np.ndarray]:
-    """Drop short spurs and specks that thinning leaves. Twice, because removing a spur can expose another."""
+def _prune(paths: list[np.ndarray], shape: tuple[int, int], distance: np.ndarray, typical: float) -> list[np.ndarray]:
+    """Drop short spurs and specks that thinning leaves. Twice, because removing a spur can expose another.
+
+    A short stub whose free end is much thicker than the drawing's lines is a dot, such as a pupil, and stays.
+    A fork beside a crossing is only as thick as its line, so it goes.
+    """
     for _ in range(2):
         degree = _degrees(_redraw(paths, shape))
         kept = []
@@ -120,7 +156,9 @@ def _prune(paths: list[np.ndarray], shape: tuple[int, int], distance: np.ndarray
             if free_start and free_end and len(path) < SPECK_MIN and radius < THICK_KEEP:
                 continue
             if free_start != free_end and len(path) < max(SPUR_MIN, SPUR_WIDTHS * radius):
-                continue
+                tip = path[0] if free_start else path[-1]
+                if float(distance[tip[0], tip[1]]) - 0.5 < max(THICK_KEEP, DOT_RATIO * typical):
+                    continue
             kept.append(path)
         paths = _paths(_redraw(kept, shape))
     return paths
@@ -234,10 +272,10 @@ def _chain(
     return strokes
 
 
-def _smooth(values: np.ndarray) -> np.ndarray:
+def _smooth(values: np.ndarray, window: int) -> np.ndarray:
     """Moving average that keeps the ends where they are."""
-    pad = SMOOTH_WINDOW // 2
-    if len(values) < SMOOTH_WINDOW + 1:
+    pad = window // 2
+    if len(values) < window + 1 or pad == 0:
         return values
     if values.ndim == 2:  # noqa: PLR2004
         head = values[0] * 2 - values[pad:0:-1]
@@ -246,29 +284,34 @@ def _smooth(values: np.ndarray) -> np.ndarray:
         head = np.full(pad, values[0])
         tail = np.full(pad, values[-1])
     padded = np.concatenate([head, values, tail])
-    kernel = np.ones(SMOOTH_WINDOW) / SMOOTH_WINDOW
+    kernel = np.ones(window) / window
     if values.ndim == 2:  # noqa: PLR2004
         return np.stack([np.convolve(padded[:, axis], kernel, mode="valid") for axis in range(2)], axis=1)
     return np.convolve(padded, kernel, mode="valid")
 
 
-def _simplify(points: np.ndarray, tolerance: float) -> np.ndarray:
-    """Indices of the points Douglas-Peucker keeps."""
-    keep = np.zeros(len(points), dtype=bool)
+def _simplify(points: np.ndarray, radii: np.ndarray, tolerance: float) -> np.ndarray:
+    """Indices of the points Douglas-Peucker keeps, judging the width as well as the position.
+
+    Without the width, a straight run with a bulge in it, such as a pupil on a line, would lose its middle points and
+    the bulge with them.
+    """
+    samples = np.column_stack([points, radii])
+    keep = np.zeros(len(samples), dtype=bool)
     keep[[0, -1]] = True
-    pending = [(0, len(points) - 1)]
+    pending = [(0, len(samples) - 1)]
     while pending:
         low, high = pending.pop()
         if high <= low + 1:
             continue
-        origin, target = points[low], points[high]
+        origin, target = samples[low], samples[high]
         span = target - origin
         length = float(np.linalg.norm(span))
-        between = points[low + 1 : high]
+        between = samples[low + 1 : high]
         if length == 0:
             offsets = np.linalg.norm(between - origin, axis=1)
         else:
-            offsets = np.abs(span[0] * (between[:, 1] - origin[1]) - span[1] * (between[:, 0] - origin[0])) / length
+            offsets = np.linalg.norm(np.cross(between - origin, span), axis=1) / length
         worst = int(np.argmax(offsets))
         if offsets[worst] > tolerance:
             index = low + 1 + worst
@@ -284,7 +327,7 @@ def _finish(
     radii = np.maximum(
         ndimage.map_coordinates(distance, [points[:, 0], points[:, 1]], order=1) - RADIUS_OFFSET, MIN_WIDTH_PX
     )
-    points, radii = _smooth(points), _smooth(radii)
+    points, radii = _smooth(points, SMOOTH_WINDOW), _smooth(radii, RADIUS_SMOOTH_WINDOW)
     # A skeleton stops about half a width short of a line's tip, so free ends are extended by that much. An end that
     # stops at a junction goes on to the junction's center, so it touches the line it meets.
     heads, tails = [], []
@@ -305,22 +348,31 @@ def _finish(
     if tails:
         points = np.vstack([points, np.array(tails)])
         radii = np.concatenate([radii, [radii[-1]] * len(tails)])
-    keep = _simplify(points, SIMPLIFY_PX)
+    keep = _simplify(points, radii, SIMPLIFY_PX)
     return {"pts": points[keep].tolist(), "r": radii[keep].tolist()}
 
 
 def trace_centerlines(
-    path: str, threshold: float = 0.5, invert: bool = False, max_resolution: int = 2048
+    path: str,
+    threshold: float = 0.5,
+    invert: bool = False,
+    max_resolution: int = 2048,
+    min_resolution: int = MIN_RESOLUTION,
 ) -> Centerlines:
-    """Trace the dark parts of the image at `path` into continuous strokes and a mask of solid areas."""
-    ink = _load_ink(path, threshold, invert, max_resolution)
+    """Trace the dark parts of the image at `path` into continuous strokes and a mask of solid areas.
+
+    The result is at the size the image was traced at, which is `Centerlines.size`. Pass `min_resolution=0` to keep
+    small images at their own size.
+    """
+    ink = _load_ink(path, threshold, invert, min_resolution, max_resolution)
     height, width = ink.shape
     if not ink.any():
-        return Centerlines((width, height), [], np.zeros_like(ink))
+        return Centerlines((width, height), [], np.zeros_like(ink), ink)
     distance = np.asarray(ndimage.distance_transform_edt(ink), dtype=np.float32)
     solid = _solid_areas(ink, distance)
     lines = ink & ~ndimage.binary_dilation(solid, iterations=1)
-    paths = _prune(_paths(morphology.skeletonize(lines)), ink.shape, distance)
+    typical = float(np.median(distance[morphology.skeletonize(ink)] - 0.5))
+    paths = _prune(_paths(morphology.skeletonize(lines)), ink.shape, distance, typical)
     junctions = _Junctions(paths, ink.shape, solid)
     paths = [
         path
@@ -335,4 +387,4 @@ def trace_centerlines(
         _finish(points, start, end, distance, junctions)
         for points, start, end in _chain(paths, _pair_branches(paths, junctions), junctions)
     ]
-    return Centerlines((width, height), [s for s in strokes if len(s["pts"]) >= MIN_STROKE_POINTS], solid)
+    return Centerlines((width, height), [s for s in strokes if len(s["pts"]) >= MIN_STROKE_POINTS], solid, ink)

@@ -457,7 +457,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         for index, image in enumerate(images, start=1):
             traced = trace_centerlines(image, settings.threshold, settings.invert, settings.max_resolution)
             json_path = folder / f"lines_{index:03d}.json"
-            traced.save(json_path, folder / f"solid_{index:03d}.png")
+            traced.save(json_path, folder / f"solid_{index:03d}.png", folder / f"ink_{index:03d}.png")
             files.append(str(json_path))
         return files
 

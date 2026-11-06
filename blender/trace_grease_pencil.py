@@ -139,6 +139,20 @@ def _solid_image(lines: dict):
     return bpy.data.images.load(lines["solid"]) if lines["solid"] else None
 
 
+def _ink_mask(flat: np.ndarray, width: int, height: int, job: dict, lines: dict | None) -> np.ndarray:
+    """Pixels that are line art. With a centerline trace this is the mask the engine used, so the colors are split
+    around the same lines that were traced; otherwise every pixel whose brightest channel is below the threshold."""
+    if lines is not None and lines["ink"]:
+        picture = bpy.data.images.load(lines["ink"])
+        if tuple(picture.size) == (width, height):
+            pixels = np.empty(width * height * 4, dtype=np.float32)
+            picture.pixels.foreach_get(pixels)
+            bpy.data.images.remove(picture)
+            return (pixels.reshape(-1, 4)[:, 0] < 0.5).reshape(height, width)  # noqa: PLR2004
+        bpy.data.images.remove(picture)
+    return (flat.max(axis=1) < job["threshold"]).reshape(height, width)
+
+
 def _color_parts(image, job: dict, lines: dict | None) -> list[tuple[int, tuple[float, float, float], object]]:
     """Split an image into the line art and its flat colors. Returns (number, linear RGB, mask image) per part.
 
@@ -152,7 +166,7 @@ def _color_parts(image, job: dict, lines: dict | None) -> list[tuple[int, tuple[
     pixels = np.empty(width * height * 4, dtype=np.float32)
     image.pixels.foreach_get(pixels)
     flat = pixels.reshape(-1, 4)[:, :3]
-    ink = (flat.max(axis=1) < job["threshold"]).reshape(height, width)
+    ink = _ink_mask(flat, width, height, job, lines)
     rest = flat[~ink.ravel()]
     parts = []
     if len(rest):
@@ -377,6 +391,10 @@ def _build(job: dict) -> list[dict]:
         image = _load_image(path, job["invert"], job["max_resolution"])
         size = tuple(image.size)
         lines = json.loads(Path(lines_path).read_text(encoding="utf-8")) if lines_path else None
+        if lines is not None and tuple(image.size) != tuple(lines["size"]):
+            # The engine traced a rescaled copy, so match it or the ink mask for the colors would not line up.
+            image.scale(*lines["size"])
+        size = tuple(image.size)
         if job["colors"]:
             parts = _color_parts(image, job, lines)
         elif lines is not None:
