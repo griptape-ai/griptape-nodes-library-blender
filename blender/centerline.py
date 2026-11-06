@@ -15,11 +15,11 @@ from pathlib import Path
 
 import numpy as np
 import skan
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy import ndimage
 from skimage import measure, morphology
 
-SPUR_WIDTHS = 2.5  # a spur is also anything shorter than this many half-widths of the line it sits on
+SPUR_WIDTHS = 1.5  # a spur is also anything shorter than this many half-widths of the line it sits on
 SPUR_MIN = 6  # a free-ended branch into a junction shorter than this many pixels is a spur
 SPECK_MIN = 6  # an isolated piece shorter than this is noise, unless it is thick
 DOT_RATIO = 2.0  # a stub end at least this many times the typical line radius is a dot
@@ -36,6 +36,11 @@ RADIUS_SMOOTH_WINDOW = (
 )
 MIN_SOLID_RADIUS = 2
 MIN_RESOLUTION = 1500  # images with a shorter long side are scaled up to at least this before tracing
+GAP_MIN_AREA = 12  # bare ink smaller than this many pixels is a ragged edge, not a gap at a join
+GAP_MIN_DEPTH = 3  # bare ink has to reach this far into the ink, as a wedge at a join does and an edge sliver does not
+GAP_OVERLAP = 3  # the gap fill is grown this many pixels into the strokes beside it, so no seam shows between them
+HUB_MARGIN = 2  # pixels added to a line's half width when filling the ink around a junction
+LINE_RADIUS_PERCENTILE = 90  # the line half width the color fills are grown to cover
 SOLID_PERCENTILE = 99  # solid means wider than this share of the drawing's line length
 RIDGE_RADIUS = 3  # a dark feature narrower than about twice this many pixels is a line, not a fill
 RIDGE_CONTRAST = 0.5  # of the way from the threshold to white that a line must stand out from its surroundings
@@ -54,6 +59,7 @@ class Centerlines:
     strokes: list[dict]
     solid: np.ndarray
     ink: np.ndarray
+    line_radius: float = 0.0
 
     def save(self, json_path: Path, solid_path: Path, ink_path: Path) -> None:
         """Write the strokes to `json_path`. The solid areas and the ink go to PNGs as black on white, or are left out."""
@@ -67,6 +73,7 @@ class Centerlines:
             "strokes": self.strokes,
             "solid": str(solid_path) if has_solid else "",
             "ink": str(ink_path) if has_ink else "",
+            "line_radius": self.line_radius,
         }
         json_path.write_text(json.dumps(content), encoding="utf-8")
 
@@ -132,12 +139,10 @@ def _redraw(paths: list[np.ndarray], shape: tuple[int, int]) -> np.ndarray:
     return drawn
 
 
-def _solid_areas(ink: np.ndarray, distance: np.ndarray) -> np.ndarray:
-    """Pixels where a disk wider than the drawing's lines fits. The disk is sized from the lines themselves."""
-    radii = distance[morphology.skeletonize(ink)] - 0.5
+def _solid_areas(ink: np.ndarray, radii: np.ndarray) -> np.ndarray:
+    """Pixels where a disk wider than the drawing's lines fits. `radii` are the half widths along the lines."""
     radius = max(MIN_SOLID_RADIUS, int(np.ceil(np.percentile(radii, SOLID_PERCENTILE) + 0.5)))
-    solid = ndimage.binary_opening(ink, structure=morphology.disk(radius))
-    return solid
+    return ndimage.binary_opening(ink, structure=morphology.disk(radius))
 
 
 def _prune(paths: list[np.ndarray], shape: tuple[int, int], distance: np.ndarray, typical: float) -> list[np.ndarray]:
@@ -352,6 +357,42 @@ def _finish(
     return {"pts": points[keep].tolist(), "r": radii[keep].tolist()}
 
 
+def _covered(strokes: list[dict], shape: tuple[int, int]) -> np.ndarray:
+    """The pixels the strokes paint: a round brush at each point, joined by its widest neighbor's width."""
+    canvas = Image.new("L", (shape[1], shape[0]), 0)
+    draw = ImageDraw.Draw(canvas)
+    for stroke in strokes:
+        points, radii = stroke["pts"], stroke["r"]
+        for (row, col), radius in zip(points, radii, strict=True):
+            draw.ellipse([col - radius, row - radius, col + radius, row + radius], fill=255)
+        for (row0, col0), (row1, col1), radius0, radius1 in zip(points, points[1:], radii, radii[1:], strict=False):
+            draw.line([(col0, row0), (col1, row1)], fill=255, width=max(1, round(2 * max(radius0, radius1))))
+    return np.asarray(canvas) > 0
+
+
+def _junction_gaps(strokes: list[dict], ink: np.ndarray, solid: np.ndarray, distance: np.ndarray) -> np.ndarray:
+    """Ink the strokes leave bare where lines meet, as a mask to fill in.
+
+    Strokes are round, but the ink at a T or a corner has a pointed wedge beside the join, and the color behind shows
+    through it. Those wedges reach deep into the ink, while the slivers along a stroke's edge do not.
+    """
+    bare = ink & ~_covered(strokes, ink.shape) & ~solid
+    labels = np.asarray(measure.label(bare, connectivity=2))
+    keep = np.zeros_like(bare)
+    for region in measure.regionprops(labels):
+        rows, cols = region.coords[:, 0], region.coords[:, 1]
+        if region.area >= GAP_MIN_AREA and float(distance[rows, cols].max()) >= GAP_MIN_DEPTH:
+            keep[rows, cols] = True
+    return ndimage.binary_dilation(keep, iterations=GAP_OVERLAP) & ink
+
+
+def _junction_hubs(junctions: "_Junctions", ink: np.ndarray, typical: float) -> np.ndarray:
+    """The ink around each junction, out to about one line width. Overlapping strokes leave small seams where they
+    meet, so the join is filled solid instead of left to the strokes."""
+    reach = int(np.ceil(typical)) + HUB_MARGIN
+    return ndimage.binary_dilation((junctions.labels > 0) | (junctions.solid_labels > 0), iterations=reach) & ink
+
+
 def trace_centerlines(
     path: str,
     threshold: float = 0.5,
@@ -369,9 +410,10 @@ def trace_centerlines(
     if not ink.any():
         return Centerlines((width, height), [], np.zeros_like(ink), ink)
     distance = np.asarray(ndimage.distance_transform_edt(ink), dtype=np.float32)
-    solid = _solid_areas(ink, distance)
+    radii = distance[morphology.skeletonize(ink)] - 0.5
+    solid = _solid_areas(ink, radii)
     lines = ink & ~ndimage.binary_dilation(solid, iterations=1)
-    typical = float(np.median(distance[morphology.skeletonize(ink)] - 0.5))
+    typical = float(np.median(radii))
     paths = _prune(_paths(morphology.skeletonize(lines)), ink.shape, distance, typical)
     junctions = _Junctions(paths, ink.shape, solid)
     paths = [
@@ -387,4 +429,11 @@ def trace_centerlines(
         _finish(points, start, end, distance, junctions)
         for points, start, end in _chain(paths, _pair_branches(paths, junctions), junctions)
     ]
-    return Centerlines((width, height), [s for s in strokes if len(s["pts"]) >= MIN_STROKE_POINTS], solid, ink)
+    strokes = [s for s in strokes if len(s["pts"]) >= MIN_STROKE_POINTS]
+    return Centerlines(
+        (width, height),
+        strokes,
+        solid | _junction_gaps(strokes, ink, solid, distance) | _junction_hubs(junctions, ink, typical),
+        ink,
+        float(np.percentile(radii, LINE_RADIUS_PERCENTILE)),
+    )

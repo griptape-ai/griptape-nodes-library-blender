@@ -37,7 +37,26 @@ def test_crossing_lines_become_two_continuous_strokes(tmp_path):
     spans = sorted(_extent(stroke) for stroke in result.strokes)
     assert spans[0][0] < 5 < 150 < spans[0][1]  # the horizontal line spans columns, barely any rows
     assert spans[1][1] < 5 < 150 < spans[1][0]  # the vertical line spans rows, barely any columns
-    assert result.solid.sum() < 100  # only the thick middle of the crossing
+    assert result.solid.sum() < 400  # only the crossing, not the lines
+
+
+def test_the_ink_around_a_t_junction_is_filled_solid(tmp_path):
+    path = _save(
+        tmp_path,
+        lambda d: (
+            d.line([(10, 100), (190, 100)], fill="black", width=LINE_WIDTH),
+            d.line([(100, 100), (100, 190)], fill="black", width=LINE_WIDTH),
+        ),
+    )
+
+    result = trace_centerlines(path, min_resolution=0)
+
+    # Round strokes leave the corners of the join bare, so the ink around it goes in the solid mask.
+    rows, cols = np.mgrid[:SIZE, :SIZE]
+    near_join = (rows - 100) ** 2 + (cols - 100) ** 2 <= LINE_WIDTH**2
+    assert result.solid[near_join & result.ink].all()
+    assert near_join[result.ink].sum() > 0
+    assert result.solid.sum() < 400  # the join only, not the whole drawing
 
 
 def test_stroke_width_follows_the_line(tmp_path):

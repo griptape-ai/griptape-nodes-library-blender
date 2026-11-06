@@ -193,6 +193,12 @@ def _color_parts(image, job: dict, lines: dict | None) -> list[tuple[int, tuple[
                 region = _dilate(_erode(region, cleanup), cleanup + 1)
             if not region.any():
                 continue
+            if lines is not None:
+                # A centerline stroke is thinner than the ink where lines meet, so a fill that stops at the ink would
+                # leave a white gap there. Let it grow into the ink next to it, under the stroke. It stops at the ink, or it
+                # would spill past the outline as a thin colored fringe on the paper side.
+                grow = HALO + int(np.ceil(lines["line_radius"])) + 1
+                region = region | (_dilate(region, grow) & ink)
             color = _srgb_to_linear(centers[cluster])
             mask = _mask_image(region, f"Mask_{number[int(cluster)]}", job["preview_dir"])
             parts.append((number[int(cluster)], (float(color[0]), float(color[1]), float(color[2])), mask))
