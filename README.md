@@ -136,8 +136,8 @@ with no Blender open; turn off `Send To Open Scene` in that case. It does not us
 - **Animated** - one object, one keyframe per image (`Start Frame`, `Frame Step`)
 - **Separate** - one object per image (`Drawing_001`, `Drawing_002`, ...)
 
-**Settings:** object name. Threshold, invert and turn policy for the trace. Max resolution, stroke type, simplify and
-smooth for cleanup. Thickness, color and fill for the look. Layer name, size, location (empty for the 3D cursor),
+**Settings:** object name. Line style, colors, threshold, invert and turn policy for the trace. Max resolution, stroke
+type, simplify and smooth for cleanup. Thickness, color and fill for the look. Layer name, size, location (empty for the 3D cursor),
 collection (empty for the active one), and replace for placement. Set `Target Object` to an existing Grease Pencil
 object to add the trace to it as a new layer. In Separate mode each image gets its own layer.
 
@@ -151,9 +151,20 @@ names. Each run overwrites the node's previews.
   Preferences > System > Allow Online Access, and start its server (port 9876). The node talks to the add-on's socket
   directly. No AI agent is involved.
 
-The tracer outlines each line rather than following its center. With `Fill` on the lines are solid; with it off you see
-the outlines, drawn at `Thickness`. Blender is
-found from `Blender Path`, then `$BLENDER_PATH`, then `blender` on `PATH`, then `/Applications/Blender.app`. Tested
+**Line style:**
+- **Centerline** (default) - each line becomes one continuous stroke as thick as the line was, and lines run on through
+  crossings. Solid areas such as pupils are kept as filled shapes. This step runs in the engine and needs the
+  scikit-image, scipy and skan packages, which the library installs.
+- **Outline** - the tracer outlines every line instead of following its center. With `Fill` on the lines are solid; with
+  it off you see the outlines, drawn at `Thickness`.
+
+**Colors:** `Colors` above 0 (default 5) traces the line art in `Color`, then splits what is left into that many flat
+colors and traces each one. `Color Target` puts each color on its own layer with its own material (`Fill 1`, `Fill 2`,
+and so on, with the line art on `Lines`), or keeps one layer and stamps each stroke's color into the `fill_color` and
+`vertex_color` attributes for Vertex Paint. The paper color is left out. `Min Shape Size` removes specks. Set `Colors`
+to 0 to trace everything in one color.
+
+Blender is found from `Blender Path`, then `$BLENDER_PATH`, then `blender` on `PATH`, then `/Applications/Blender.app`. Tested
 with Blender 5.3.
 
 ### Image to Camera Plane Node
@@ -269,3 +280,4 @@ Camera Capture Node works independently but with limited features:
 ## Requirements
 
 - **Blender 4.2+** with the Blender Lab MCP add-on (tested with 5.3)
+- **scikit-image, scipy, skan and Pillow** for centerline tracing, installed with the library

@@ -83,6 +83,17 @@ def copy_drawing(source, target, matrix: Matrix, material_map: list[int]) -> tup
     return new_ranges["CURVE"], new_ranges["POINT"]
 
 
+def clear_fill(drawing, curves: slice) -> None:
+    """Stop the strokes in `curves` from filling. Open strokes fill by joining their ends, which a line must not do."""
+    attribute = drawing.attributes.get("fill_opacity")
+    if attribute is None:
+        attribute = drawing.attributes.new("fill_opacity", "FLOAT", "CURVE")
+        attribute.data.foreach_set("value", np.ones(len(attribute.data), dtype=np.float32))
+    values = _read_attribute(attribute)
+    values[curves] = 0.0
+    attribute.data.foreach_set("value", values)
+
+
 def stamp_color(drawing, curves: slice, points: slice, color: tuple[float, float, float]) -> None:
     """Set the color attributes of some strokes, so they show `color` (linear RGB) in Vertex Paint's color data.
 

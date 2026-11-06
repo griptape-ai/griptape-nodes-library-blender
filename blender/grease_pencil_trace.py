@@ -25,6 +25,8 @@ RUN_TIMEOUT_SECONDS = 600
 MODE_ANIMATED = "animated"
 MODE_SEPARATE = "separate"
 COLOR_LAYERS = "layers"
+LINE_OUTLINE = "outline"
+LINE_CENTERLINE = "centerline"
 COLOR_ATTRIBUTES = "attributes"
 TURN_POLICIES = ["MINORITY", "MAJORITY", "FOREGROUND", "BACKGROUND", "LEFT", "RIGHT", "RANDOM"]
 
@@ -37,6 +39,7 @@ class TraceSettings:
     threshold: float = 0.5
     turn_policy: str = "MINORITY"
     invert: bool = False
+    line_style: str = LINE_CENTERLINE
     colors: int = 5
     color_target: str = COLOR_LAYERS
     color_cleanup: int = 2
@@ -126,6 +129,7 @@ def trace_job(
     preview_dir: str,
     target_blend: str = "",
     placement: Placement | None = None,
+    centerline: list[str] | None = None,
 ) -> dict[str, Any]:
     """The JSON job `trace_grease_pencil.py` reads."""
     if not images:
@@ -143,6 +147,7 @@ def trace_job(
         "threshold": settings.threshold,
         "turn_policy": settings.turn_policy,
         "invert": settings.invert,
+        "centerline": centerline,
         "colors": max(0, settings.colors),
         "color_target": settings.color_target,
         "skip_background": settings.skip_background,

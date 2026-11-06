@@ -7,6 +7,8 @@ import blender_mcp_client
 from grease_pencil_trace import (
     COLOR_ATTRIBUTES,
     COLOR_LAYERS,
+    LINE_CENTERLINE,
+    LINE_OUTLINE,
     MODE_ANIMATED,
     MODE_SEPARATE,
     TURN_POLICIES,
@@ -36,6 +38,10 @@ MODE_LABELS = {"Animated (one object, a keyframe per image)": MODE_ANIMATED, "Se
 COLOR_TARGET_LABELS = {
     "Layers (a layer and material per color)": COLOR_LAYERS,
     "Attributes (one layer, color attributes)": COLOR_ATTRIBUTES,
+}
+LINE_STYLE_LABELS = {
+    "Centerline (continuous strokes)": LINE_CENTERLINE,
+    "Outline (filled shapes)": LINE_OUTLINE,
 }
 STROKE_LABELS = {"Poly (simplify and smooth apply)": "POLY", "Bezier (as traced)": "BEZIER"}
 
@@ -93,6 +99,14 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         )
 
         with ParameterGroup(name="Trace") as trace_group:
+            ParameterString(
+                name="line_style",
+                display_name="Line Style",
+                tooltip="Centerline draws each line as one continuous stroke as thick as the line was, with solid areas such as pupils kept as filled shapes. Outline traces around every line and fills it.",
+                default_value=next(iter(LINE_STYLE_LABELS)),
+                traits={Options(choices=list(LINE_STYLE_LABELS))},
+                allow_output=False,
+            )
             ParameterFloat(
                 name="threshold",
                 display_name="Threshold",
@@ -389,6 +403,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             threshold=float(value("threshold")),
             turn_policy=value("turn_policy"),
             invert=bool(value("invert")),
+            line_style=LINE_STYLE_LABELS.get(value("line_style"), LINE_CENTERLINE),
             colors=int(value("colors") or 0),
             color_target=COLOR_TARGET_LABELS.get(value("color_target"), COLOR_LAYERS),
             min_shape=int(value("min_shape") or 0),
@@ -431,6 +446,21 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             paths.append(str(path))
         return paths
 
+    def _centerlines(self, images: list[str], settings: TraceSettings, folder: Path) -> list[str]:
+        """Trace each image's lines into strokes here in the engine, and write what Blender needs to a JSON each."""
+        try:
+            from centerline import trace_centerlines  # noqa: PLC0415 - needs scikit-image, scipy and skan
+        except ImportError as e:
+            msg = "Centerline needs the scikit-image, scipy and skan packages. Reinstall this library's dependencies, or set 'Line Style' to Outline."
+            raise NodeError(msg) from e
+        files = []
+        for index, image in enumerate(images, start=1):
+            traced = trace_centerlines(image, settings.threshold, settings.invert, settings.max_resolution)
+            json_path = folder / f"lines_{index:03d}.json"
+            traced.save(json_path, folder / f"solid_{index:03d}.png")
+            files.append(str(json_path))
+        return files
+
     def _trace(self) -> str:
         settings = self._settings()
         placement = self._placement()
@@ -444,6 +474,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             work = Path(folder)
             images = self._write_images(work)
             traced_blend = work / "traced.blend"
+            centerline = self._centerlines(images, settings, work) if settings.line_style == LINE_CENTERLINE else None
             job = trace_job(
                 images,
                 settings,
@@ -451,6 +482,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 str(work),
                 target_blend=str(Path(target_blend).expanduser()) if target_blend else "",
                 placement=placement,
+                centerline=centerline,
             )
             result = run_trace(blender, job)
             blend = self._blend_file.build_file().write_bytes(traced_blend.read_bytes())

@@ -17,7 +17,14 @@ from mathutils import Matrix
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from grease_pencil_scene import _read_attribute, copy_drawing, import_traced, remove_object, stamp_color  # noqa: E402
+from grease_pencil_scene import (  # noqa: E402
+    _read_attribute,
+    clear_fill,
+    copy_drawing,
+    import_traced,
+    remove_object,
+    stamp_color,
+)
 
 SUCCESS_MARKER = "TRACE_OK"
 COLOR_LAYERS = "layers"
@@ -127,7 +134,12 @@ def _mask_image(region: np.ndarray, name: str, folder: str):
     return mask
 
 
-def _color_parts(image, job: dict) -> list[tuple[int, tuple[float, float, float], object]]:
+def _solid_image(lines: dict):
+    """The solid areas of a centerline trace as an image the tracer can read, or None when there are none."""
+    return bpy.data.images.load(lines["solid"]) if lines["solid"] else None
+
+
+def _color_parts(image, job: dict, lines: dict | None) -> list[tuple[int, tuple[float, float, float], object]]:
     """Split an image into the line art and its flat colors. Returns (number, linear RGB, mask image) per part.
 
     Number 0 is the line art: every pixel whose brightest channel is below the threshold, in the ink color. The rest of the pixels are
@@ -170,7 +182,11 @@ def _color_parts(image, job: dict) -> list[tuple[int, tuple[float, float, float]
             color = _srgb_to_linear(centers[cluster])
             mask = _mask_image(region, f"Mask_{number[int(cluster)]}", job["preview_dir"])
             parts.append((number[int(cluster)], (float(color[0]), float(color[1]), float(color[2])), mask))
-    if ink.any():
+    if lines is not None:
+        # The lines are strokes; only the solid areas are outlined.
+        if lines["strokes"] or lines["solid"]:
+            parts.append((0, tuple(job["color"]), _solid_image(lines)))
+    elif ink.any():
         parts.append((0, tuple(job["color"]), _mask_image(ink, "Mask_ink", job["preview_dir"])))
     if not parts:
         msg = "The image has only one color, so there is nothing to trace after skipping the background."
@@ -245,14 +261,17 @@ def _drop_small_shapes(drawing, min_area: float) -> None:
         drawing.remove_strokes(indices=small)
 
 
-def _set_radius(drawing, radius: float) -> None:
-    count = sum(len(stroke.points) for stroke in drawing.strokes)
-    if not count:
+def _set_radius(drawing, radius: float, points: slice) -> None:
+    """Give the points in `points` a radius, leaving the rest of the drawing as it is."""
+    total = sum(len(stroke.points) for stroke in drawing.strokes)
+    if not total:
         return
     attribute = drawing.attributes.get("radius")
     if attribute is None:
         attribute = drawing.attributes.new("radius", "FLOAT", "POINT")
-    attribute.data.foreach_set("value", np.full(count, radius, dtype=np.float32))
+    values = _read_attribute(attribute)
+    values[points] = radius
+    attribute.data.foreach_set("value", values)
 
 
 def _ink_material(name: str, color: tuple[float, float, float], fill: bool):
@@ -283,6 +302,37 @@ def _placement(image_size: tuple[int, int], size: float) -> Matrix:
     width, height = image_size
     scale = size * max(width, height) / width
     return Matrix.Rotation(math.radians(90), 4, "X") @ Matrix.Scale(scale, 4)
+
+
+def _add_centerlines(drawing, lines: dict, matrix: Matrix, slot: int) -> tuple[slice, slice]:
+    """Append the centerline strokes to `drawing`. Returns the curve and point ranges they occupy."""
+    width, height = lines["size"]
+    longest = max(width, height)
+    strokes = lines["strokes"]
+    data = bpy.data.grease_pencils.new("Centerlines")
+    source = data.layers.new("Centerlines").frames.new(1).drawing
+    source.add_strokes([len(stroke["pts"]) for stroke in strokes])
+    positions = np.array(
+        [
+            ((col - width / 2) / longest, (height / 2 - row) / longest, 0.0)
+            for stroke in strokes
+            for row, col in stroke["pts"]
+        ],
+        dtype=np.float32,
+    )
+    radii = np.array([radius / longest for stroke in strokes for radius in stroke["r"]], dtype=np.float32)
+    source.attributes["position"].data.foreach_set("vector", positions.ravel())
+    source.attributes.new("radius", "FLOAT", "POINT").data.foreach_set("value", radii)
+    # copy_drawing maps material slots by this attribute, so without it the strokes land in slot 0.
+    source.attributes.new("material_index", "INT", "CURVE").data.foreach_set(
+        "value", np.zeros(len(strokes), dtype=np.int32)
+    )
+    source.tag_positions_changed()
+    curves, points = copy_drawing(source, drawing, matrix, [slot])
+    clear_fill(drawing, curves)
+    ranges = (curves, points)
+    bpy.data.grease_pencils.remove(data)
+    return ranges
 
 
 def _fill_layer_name(layer_name: str, number: int, job: dict) -> str:
@@ -318,12 +368,21 @@ def _build(job: dict) -> list[dict]:
         material = _ink_material(job["material_name"], (1.0, 1.0, 1.0), fill=True)
     else:
         material = None
+    centerlines = job["centerline"] or [""] * len(job["images"])
     placed = []
-    for path, (object_name, layer_name, frame) in zip(job["images"], _destinations(job), strict=True):
+    for path, (object_name, layer_name, frame), lines_path in zip(
+        job["images"], _destinations(job), centerlines, strict=True
+    ):
         scene.frame_set(frame)
         image = _load_image(path, job["invert"], job["max_resolution"])
         size = tuple(image.size)
-        parts = _color_parts(image, job) if job["colors"] else [(None, tuple(job["color"]), image)]
+        lines = json.loads(Path(lines_path).read_text(encoding="utf-8")) if lines_path else None
+        if job["colors"]:
+            parts = _color_parts(image, job, lines)
+        elif lines is not None:
+            parts = [(None, tuple(job["color"]), _solid_image(lines))]
+        else:
+            parts = [(None, tuple(job["color"]), image)]
 
         obj = bpy.data.objects.get(object_name)
         if obj is None:
@@ -334,16 +393,23 @@ def _build(job: dict) -> list[dict]:
             scene.collection.objects.link(obj)
         drawings = {}
         for number, color, mask in parts:
-            traced = _trace(mask, job)
-            _clean_up(traced, job)
-            if number is not None:
-                long_side = max(size)
-                _drop_small_shapes(traced.data.layers[0].frames[0].drawing, job["min_shape"] / long_side**2)
+            is_ink = number in (None, 0)
+            strokes = lines["strokes"] if lines is not None and is_ink else []
+            traced = None
+            if mask is not None:
+                traced = _trace(mask, job)
+                _clean_up(traced, job)
+                if number is not None:
+                    long_side = max(size)
+                    _drop_small_shapes(traced.data.layers[0].frames[0].drawing, job["min_shape"] / long_side**2)
                 if not traced.data.layers[0].frames[0].drawing.strokes:
-                    # Everything in this color was a speck, so it gets no layer.
                     remove_object(traced)
+                    traced = None
+            if traced is None and not strokes:
+                # Everything in this color was a speck, so it gets no layer.
+                if mask is not None and mask is not image:
                     bpy.data.images.remove(mask)
-                    continue
+                continue
             label = _fill_layer_name(layer_name, number, job) if by_layer and number else layer_name
             if label not in drawings:
                 layer = obj.data.layers.get(label)
@@ -353,22 +419,38 @@ def _build(job: dict) -> list[dict]:
                 drawings[label] = layer.frames.new(frame).drawing
             drawing = drawings[label]
             slot = _color_slot(obj.data, job, number, color) if by_layer and number is not None else 0
-            source = traced.data.layers[0].frames[0].drawing
-            material_map = [slot] * max(1, len(traced.data.materials))
-            curves, points = copy_drawing(source, drawing, _placement(size, job["size"]), material_map)
-            # The tracer hides its strokes and shows only fills; show them so Thickness and Fill off work.
-            hidden = drawing.attributes.get("hide_stroke")
-            if hidden is not None:
-                drawing.attributes.remove(hidden)
-            _set_radius(drawing, job["thickness"])
+            placement = _placement(size, job["size"])
+            ranges = []
+            if traced is not None:
+                source = traced.data.layers[0].frames[0].drawing
+                material_map = [slot] * max(1, len(traced.data.materials))
+                curves, points = copy_drawing(source, drawing, placement, material_map)
+                # The tracer hides its strokes and shows only fills; show them so Thickness and Fill off work.
+                hidden = drawing.attributes.get("hide_stroke")
+                if hidden is not None:
+                    drawing.attributes.remove(hidden)
+                _set_radius(drawing, job["thickness"], points)
+                ranges.append((curves, points))
+                remove_object(traced)
+            if strokes and lines is not None:
+                ranges.append(_add_centerlines(drawing, lines, placement, slot))
             if number is not None and not by_layer:
-                stamp_color(drawing, curves, points, color)
-            remove_object(traced)
-            if mask is not image:
+                for curves, points in ranges:
+                    stamp_color(drawing, curves, points, color)
+            if mask is not None and mask is not image:
                 bpy.data.images.remove(mask)
         bpy.data.images.remove(image)
         placed.append({"object": obj.name, "layers": list(drawings), "frame": frame, "size": size})
     return placed
+
+
+def _reload_scene(job: dict) -> None:
+    """Save the scene and open it again. Bezier fills made through the API render from their control points, as
+    polygons, until the file is reloaded, which would make the previews wrong."""
+    path = Path(job["preview_dir"]) / "reload.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=str(path), copy=True)
+    bpy.ops.wm.open_mainfile(filepath=str(path))
+    path.unlink()
 
 
 def _render_previews(placed: list[dict], job: dict) -> list[str]:
@@ -440,6 +522,7 @@ def main() -> None:
     placed = _build(job)
     objects = list(dict.fromkeys(entry["object"] for entry in placed))
     layers = list(dict.fromkeys(layer for entry in placed for layer in entry["layers"]))
+    _reload_scene(job)
     previews = _render_previews(placed, job)
     _save_traced(objects, job["output_blend"])
 

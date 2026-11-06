@@ -16,7 +16,13 @@
             "Socket"
         ],
         "dependencies": {
-            "pip_dependencies": []
+            "pip_dependencies": [
+                "numpy>=2.2,<3",
+                "scipy>=1.13,<2",
+                "scikit-image>=0.25,<1",
+                "skan>=0.12,<1",
+                "pillow>=11"
+            ]
         }
     },
     "categories": [
