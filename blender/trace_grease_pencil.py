@@ -352,7 +352,7 @@ def _build(job: dict) -> list[dict]:
                     layer.use_lights = False
                 drawings[label] = layer.frames.new(frame).drawing
             drawing = drawings[label]
-            slot = _color_slot(obj.data, job, number, color) if by_layer else 0
+            slot = _color_slot(obj.data, job, number, color) if by_layer and number is not None else 0
             source = traced.data.layers[0].frames[0].drawing
             material_map = [slot] * max(1, len(traced.data.materials))
             curves, points = copy_drawing(source, drawing, _placement(size, job["size"]), material_map)
