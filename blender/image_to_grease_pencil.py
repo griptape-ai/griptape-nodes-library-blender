@@ -5,6 +5,8 @@ from typing import Any
 
 import blender_mcp_client
 from grease_pencil_trace import (
+    COLOR_ATTRIBUTES,
+    COLOR_LAYERS,
     MODE_ANIMATED,
     MODE_SEPARATE,
     TURN_POLICIES,
@@ -31,6 +33,10 @@ from griptape_nodes.traits.options import Options
 from preview_sheets import animated_gif, contact_sheet
 
 MODE_LABELS = {"Animated (one object, a keyframe per image)": MODE_ANIMATED, "Separate (one per image)": MODE_SEPARATE}
+COLOR_TARGET_LABELS = {
+    "Layers (a layer and material per color)": COLOR_LAYERS,
+    "Attributes (one layer, color attributes)": COLOR_ATTRIBUTES,
+}
 STROKE_LABELS = {"Poly (simplify and smooth apply)": "POLY", "Bezier (as traced)": "BEZIER"}
 
 
@@ -103,6 +109,29 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 tooltip="Trace the light parts instead, for light lines on dark.",
                 default_value=False,
             )
+            ParameterInt(
+                name="colors",
+                display_name="Colors",
+                tooltip="Trace the line art in 'Color', then split what is left into this many flat colors and trace each one. 0 traces everything as one color.",
+                default_value=5,
+                min_val=0,
+                max_val=16,
+            )
+            ParameterString(
+                name="color_target",
+                display_name="Color Target",
+                tooltip="Where the colors go. Attributes stamps each stroke's color into the color attributes on one layer, for Vertex Paint. Layers puts each color on its own layer with its own material.",
+                default_value=next(iter(COLOR_TARGET_LABELS)),
+                traits={Options(choices=list(COLOR_TARGET_LABELS))},
+                allow_output=False,
+            )
+            ParameterInt(
+                name="min_shape",
+                display_name="Min Shape Size",
+                tooltip="Remove traced shapes smaller than this many square pixels, such as specks and slivers beside the lines. Only applies when Colors is above 0. 0 keeps everything.",
+                default_value=20,
+                min_val=0,
+            )
             ParameterString(
                 name="turn_policy",
                 display_name="Turn Policy",
@@ -125,7 +154,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 name="stroke_type",
                 display_name="Stroke Type",
                 tooltip="Poly strokes can be simplified and smoothed; Bezier keeps the traced curves.",
-                default_value=next(iter(STROKE_LABELS)),
+                default_value="Bezier (as traced)",
                 traits={Options(choices=list(STROKE_LABELS))},
                 allow_output=False,
             )
@@ -133,7 +162,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 name="simplify",
                 display_name="Simplify",
                 tooltip="Remove points that barely change the shape. 0 keeps every point.",
-                default_value=0.0,
+                default_value=0.001,
                 min_val=0.0,
                 max_val=0.05,
                 slider=True,
@@ -360,6 +389,9 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             threshold=float(value("threshold")),
             turn_policy=value("turn_policy"),
             invert=bool(value("invert")),
+            colors=int(value("colors") or 0),
+            color_target=COLOR_TARGET_LABELS.get(value("color_target"), COLOR_LAYERS),
+            min_shape=int(value("min_shape") or 0),
             max_resolution=int(value("max_resolution")),
             stroke_type=STROKE_LABELS.get(value("stroke_type"), "POLY"),
             simplify=float(value("simplify")),

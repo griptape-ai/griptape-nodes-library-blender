@@ -24,6 +24,8 @@ RUN_TIMEOUT_SECONDS = 600
 
 MODE_ANIMATED = "animated"
 MODE_SEPARATE = "separate"
+COLOR_LAYERS = "layers"
+COLOR_ATTRIBUTES = "attributes"
 TURN_POLICIES = ["MINORITY", "MAJORITY", "FOREGROUND", "BACKGROUND", "LEFT", "RIGHT", "RANDOM"]
 
 
@@ -35,15 +37,22 @@ class TraceSettings:
     threshold: float = 0.5
     turn_policy: str = "MINORITY"
     invert: bool = False
+    colors: int = 5
+    color_target: str = COLOR_LAYERS
+    color_cleanup: int = 2
+    min_shape: int = 20
+    skip_background: bool = True
+    background_tolerance: float = 0.1
     max_resolution: int = 2048
-    stroke_type: str = "POLY"
-    simplify: float = 0.0
+    stroke_type: str = "BEZIER"
+    simplify: float = 0.001
     smooth: float = 0.0
     thickness: float = 0.002
     color: str = "#000000"
     fill: bool = True
     object_name: str = "Drawing"
     layer_name: str = "Lines"
+    fill_name: str = "Fill"
     size: float = 2.0
     start_frame: int = 1
     frame_step: int = 1
@@ -134,6 +143,12 @@ def trace_job(
         "threshold": settings.threshold,
         "turn_policy": settings.turn_policy,
         "invert": settings.invert,
+        "colors": max(0, settings.colors),
+        "color_target": settings.color_target,
+        "skip_background": settings.skip_background,
+        "background_tolerance": settings.background_tolerance,
+        "color_cleanup": max(0, settings.color_cleanup),
+        "min_shape": max(0, settings.min_shape),
         "max_resolution": settings.max_resolution,
         "stroke_type": settings.stroke_type,
         "simplify": settings.simplify,
@@ -143,6 +158,7 @@ def trace_job(
         "fill": settings.fill,
         "object_name": settings.object_name,
         "layer_name": settings.layer_name,
+        "fill_name": settings.fill_name,
         "material_name": f"{settings.layer_name if on_layers else settings.object_name}_Ink",
         "size": settings.size,
         "start_frame": settings.start_frame,

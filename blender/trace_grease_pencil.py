@@ -17,11 +17,17 @@ from mathutils import Matrix
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from grease_pencil_scene import copy_drawing, import_traced, remove_object  # noqa: E402
+from grease_pencil_scene import _read_attribute, copy_drawing, import_traced, remove_object, stamp_color  # noqa: E402
 
 SUCCESS_MARKER = "TRACE_OK"
+COLOR_LAYERS = "layers"
 PREVIEW_MARGIN = 1.05
 PREVIEW_MAX_SIZE = 1024
+CLUSTER_SAMPLE = 50000
+CLUSTER_ITERATIONS = 12
+CLUSTER_CHUNK = 500_000
+HALO = 2
+LUMA = np.array([0.2126, 0.7152, 0.0722])
 
 
 def _load_image(path: str, invert: bool, max_resolution: int):
@@ -47,6 +53,131 @@ def _load_image(path: str, invert: bool, max_resolution: int):
     return image
 
 
+def _nearest(pixels: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    """Index of the closest center for every pixel, in chunks to keep memory flat on large images."""
+    labels = np.empty(len(pixels), dtype=np.int32)
+    for start in range(0, len(pixels), CLUSTER_CHUNK):
+        chunk = pixels[start : start + CLUSTER_CHUNK]
+        labels[start : start + CLUSTER_CHUNK] = ((chunk[:, None, :] - centers[None]) ** 2).sum(axis=2).argmin(axis=1)
+    return labels
+
+
+def _cluster(pixels: np.ndarray, count: int) -> np.ndarray:
+    """K-means on an (n, 3) array of colors, seeded k-means++ with a fixed seed so a rerun gives the same palette."""
+    rng = np.random.default_rng(0)
+    sample = pixels[rng.choice(len(pixels), min(len(pixels), CLUSTER_SAMPLE), replace=False)]
+    centers = [sample[rng.integers(len(sample))]]
+    while len(centers) < count:
+        distance = ((sample[:, None, :] - np.array(centers)[None]) ** 2).sum(axis=2).min(axis=1)
+        total = distance.sum()
+        if total <= 0:
+            break
+        centers.append(sample[rng.choice(len(sample), p=distance / total)])
+    found = np.array(centers)
+    for _ in range(CLUSTER_ITERATIONS):
+        labels = _nearest(sample, found)
+        for index in range(len(found)):
+            members = sample[labels == index]
+            if len(members):
+                found[index] = members.mean(axis=0)
+    return found
+
+
+def _srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
+    return np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)  # noqa: PLR2004
+
+
+def _erode(mask: np.ndarray, steps: int) -> np.ndarray:
+    for _ in range(steps):
+        eroded = mask.copy()
+        eroded[1:] &= mask[:-1]
+        eroded[:-1] &= mask[1:]
+        eroded[:, 1:] &= mask[:, :-1]
+        eroded[:, :-1] &= mask[:, 1:]
+        mask = eroded
+    return mask
+
+
+def _dilate(mask: np.ndarray, steps: int) -> np.ndarray:
+    for _ in range(steps):
+        grown = mask.copy()
+        grown[1:] |= mask[:-1]
+        grown[:-1] |= mask[1:]
+        grown[:, 1:] |= mask[:, :-1]
+        grown[:, :-1] |= mask[:, 1:]
+        mask = grown
+    return mask
+
+
+def _mask_image(region: np.ndarray, name: str, folder: str):
+    """A black-on-white image of `region` for the tracer, which only accepts images that come from a file."""
+    height, width = region.shape
+    pixels = np.ones((height, width, 4), dtype=np.float32)
+    pixels[region, :3] = 0.0
+    generated = bpy.data.images.new(name, width, height, alpha=False)
+    generated.pixels.foreach_set(pixels.ravel())
+    path = Path(folder) / f"{name}.png"
+    generated.filepath_raw = str(path)
+    generated.file_format = "PNG"
+    generated.save()
+    bpy.data.images.remove(generated)
+    mask = bpy.data.images.load(str(path))
+    mask.pack()
+    path.unlink()
+    return mask
+
+
+def _color_parts(image, job: dict) -> list[tuple[int, tuple[float, float, float], object]]:
+    """Split an image into the line art and its flat colors. Returns (number, linear RGB, mask image) per part.
+
+    Number 0 is the line art: every pixel whose brightest channel is below the threshold, in the ink color. The rest of the pixels are
+    clustered into `colors` colors, numbered from 1, darkest first, so a number means the same kind of color on
+    every image. Soft edges would otherwise make a thin ring of in-between colors around every line, thousands of
+    tiny shapes, so each color region is opened to drop slivers and then grown back to tuck under the lines.
+    Parts come biggest color first and the line art last, so large fills sit behind and the lines end up on top.
+    """
+    width, height = image.size
+    pixels = np.empty(width * height * 4, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    flat = pixels.reshape(-1, 4)[:, :3]
+    ink = (flat.max(axis=1) < job["threshold"]).reshape(height, width)
+    rest = flat[~ink.ravel()]
+    parts = []
+    if len(rest):
+        centers = _cluster(rest, job["colors"])
+        labels = _nearest(flat, centers).reshape(height, width)
+        areas = np.bincount(labels[~ink], minlength=len(centers))
+        # The paper often splits into a few near-identical clusters, so every color close to the one touching the
+        # edge is skipped, or the others trace as hundreds of blobs.
+        background = set()
+        if job["skip_background"]:
+            border = np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+            edge = int(np.bincount(border, minlength=len(centers)).argmax())
+            distance = np.linalg.norm(centers - centers[edge], axis=1)
+            background = {int(i) for i in np.flatnonzero(distance <= job["background_tolerance"])} | {edge}
+        number = {int(cluster): place + 1 for place, cluster in enumerate(np.argsort(centers @ LUMA))}
+        cleanup = job["color_cleanup"]
+        # The soft edge beside a line is neither line nor color, so count it as line when sorting the colors.
+        beside_ink = _dilate(ink, HALO)
+        for cluster in np.argsort(-areas):
+            if int(cluster) in background or areas[cluster] == 0:
+                continue
+            region = (labels == cluster) & ~beside_ink
+            if cleanup:
+                region = _dilate(_erode(region, cleanup), cleanup + 1)
+            if not region.any():
+                continue
+            color = _srgb_to_linear(centers[cluster])
+            mask = _mask_image(region, f"Mask_{number[int(cluster)]}", job["preview_dir"])
+            parts.append((number[int(cluster)], (float(color[0]), float(color[1]), float(color[2])), mask))
+    if ink.any():
+        parts.append((0, tuple(job["color"]), _mask_image(ink, "Mask_ink", job["preview_dir"])))
+    if not parts:
+        msg = "The image has only one color, so there is nothing to trace after skipping the background."
+        raise ValueError(msg)
+    return parts
+
+
 def _trace(image, job: dict):
     """Trace one image with Blender's operator. Returns the new object; its drawing spans 1 unit on the long side."""
     scene = bpy.context.scene
@@ -56,6 +187,8 @@ def _trace(image, job: dict):
     reference.data = image
     scene.collection.objects.link(reference)
     view_layer = bpy.context.view_layer
+    # Objects removed by an earlier trace in the same frame linger as None until the view layer updates.
+    view_layer.update()
     for obj in view_layer.objects:
         obj.select_set(False)
     view_layer.objects.active = reference
@@ -94,6 +227,24 @@ def _clean_up(obj, job: dict) -> None:
         _apply_modifier(obj, "GREASE_PENCIL_SMOOTH", factor=job["smooth"], step=1, use_keep_shape=True)
 
 
+def _drop_small_shapes(drawing, min_area: float) -> None:
+    """Remove strokes enclosing less than `min_area` (the image's long side is 1 unit), such as specks and slivers."""
+    if min_area <= 0:
+        return
+    small = []
+    positions = _read_attribute(drawing.attributes["position"]).reshape(-1, 3)
+    start = 0
+    for index, stroke in enumerate(drawing.strokes):
+        count = len(stroke.points)
+        x, y = positions[start : start + count, 0], positions[start : start + count, 1]
+        start += count
+        area = abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))) / 2.0 if count >= 3 else 0.0  # noqa: PLR2004
+        if area < min_area:
+            small.append(index)
+    if small:
+        drawing.remove_strokes(indices=small)
+
+
 def _set_radius(drawing, radius: float) -> None:
     count = sum(len(stroke.points) for stroke in drawing.strokes)
     if not count:
@@ -104,17 +255,27 @@ def _set_radius(drawing, radius: float) -> None:
     attribute.data.foreach_set("value", np.full(count, radius, dtype=np.float32))
 
 
-def _ink_material(job: dict):
-    material = bpy.data.materials.new(job["material_name"])
+def _ink_material(name: str, color: tuple[float, float, float], fill: bool):
+    material = bpy.data.materials.new(name)
     bpy.data.materials.create_gpencil_data(material)
     style = material.grease_pencil
-    red, green, blue = job["color"]
+    red, green, blue = color
     style.color = (red, green, blue, 1.0)
-    style.fill_color = (red, green, blue, 1.0 if job["fill"] else 0.0)
+    style.fill_color = (red, green, blue, 1.0 if fill else 0.0)
     if bpy.app.version < (5, 3, 0):
         style.show_stroke = True
-        style.show_fill = job["fill"]
+        style.show_fill = fill
     return material
+
+
+def _color_slot(data, job: dict, number: int, color: tuple[float, float, float]) -> int:
+    """Material slot for color `number` on `data`, adding a material of that color the first time."""
+    name = f"{job['material_name'].removesuffix('_Ink')}_Color_{number:02d}" if number else job["material_name"]
+    for slot, material in enumerate(data.materials):
+        if material and material.name == name:
+            return slot
+    data.materials.append(_ink_material(name, color, fill=True))
+    return len(data.materials) - 1
 
 
 def _placement(image_size: tuple[int, int], size: float) -> Matrix:
@@ -122,6 +283,11 @@ def _placement(image_size: tuple[int, int], size: float) -> Matrix:
     width, height = image_size
     scale = size * max(width, height) / width
     return Matrix.Rotation(math.radians(90), 4, "X") @ Matrix.Scale(scale, 4)
+
+
+def _fill_layer_name(layer_name: str, number: int, job: dict) -> str:
+    """`layer_name` with its Lines base swapped for the fill name, such as `Fill 2` or `Fill_001 2`."""
+    return f"{layer_name.replace(job['layer_name'], job['fill_name'], 1)} {number}"
 
 
 def _names(base: str, count: int) -> list[str]:
@@ -144,38 +310,64 @@ def _destinations(job: dict) -> list[tuple[str, str, int]]:
 def _build(job: dict) -> list[dict]:
     """Trace every image into its destination. Returns, per image, where it went and the image's size."""
     scene = bpy.context.scene
-    material = _ink_material(job)
+    by_layer = job["colors"] and job["color_target"] == COLOR_LAYERS
+    if not job["colors"]:
+        material = _ink_material(job["material_name"], tuple(job["color"]), job["fill"])
+    elif not by_layer:
+        # Color attributes tint the material's color, so it has to be white to show them true.
+        material = _ink_material(job["material_name"], (1.0, 1.0, 1.0), fill=True)
+    else:
+        material = None
     placed = []
     for path, (object_name, layer_name, frame) in zip(job["images"], _destinations(job), strict=True):
         scene.frame_set(frame)
         image = _load_image(path, job["invert"], job["max_resolution"])
         size = tuple(image.size)
-        traced = _trace(image, job)
-        _clean_up(traced, job)
+        parts = _color_parts(image, job) if job["colors"] else [(None, tuple(job["color"]), image)]
 
         obj = bpy.data.objects.get(object_name)
         if obj is None:
             data = bpy.data.grease_pencils.new(object_name)
-            data.materials.append(material)
+            if material is not None:
+                data.materials.append(material)
             obj = bpy.data.objects.new(object_name, data)
             scene.collection.objects.link(obj)
-        layer = obj.data.layers.get(layer_name)
-        if layer is None:
-            layer = obj.data.layers.new(layer_name)
-            layer.use_lights = False
-        drawing = layer.frames.new(frame).drawing
-        source = traced.data.layers[0].frames[0].drawing
-        material_map = [0] * max(1, len(traced.data.materials))
-        copy_drawing(source, drawing, _placement(size, job["size"]), material_map)
-        # The tracer hides its strokes and shows only fills; show them so Thickness and Fill off work.
-        hidden = drawing.attributes.get("hide_stroke")
-        if hidden is not None:
-            drawing.attributes.remove(hidden)
-        _set_radius(drawing, job["thickness"])
-
-        remove_object(traced)
+        drawings = {}
+        for number, color, mask in parts:
+            traced = _trace(mask, job)
+            _clean_up(traced, job)
+            if number is not None:
+                long_side = max(size)
+                _drop_small_shapes(traced.data.layers[0].frames[0].drawing, job["min_shape"] / long_side**2)
+                if not traced.data.layers[0].frames[0].drawing.strokes:
+                    # Everything in this color was a speck, so it gets no layer.
+                    remove_object(traced)
+                    bpy.data.images.remove(mask)
+                    continue
+            label = _fill_layer_name(layer_name, number, job) if by_layer and number else layer_name
+            if label not in drawings:
+                layer = obj.data.layers.get(label)
+                if layer is None:
+                    layer = obj.data.layers.new(label)
+                    layer.use_lights = False
+                drawings[label] = layer.frames.new(frame).drawing
+            drawing = drawings[label]
+            slot = _color_slot(obj.data, job, number, color) if by_layer else 0
+            source = traced.data.layers[0].frames[0].drawing
+            material_map = [slot] * max(1, len(traced.data.materials))
+            curves, points = copy_drawing(source, drawing, _placement(size, job["size"]), material_map)
+            # The tracer hides its strokes and shows only fills; show them so Thickness and Fill off work.
+            hidden = drawing.attributes.get("hide_stroke")
+            if hidden is not None:
+                drawing.attributes.remove(hidden)
+            _set_radius(drawing, job["thickness"])
+            if number is not None and not by_layer:
+                stamp_color(drawing, curves, points, color)
+            remove_object(traced)
+            if mask is not image:
+                bpy.data.images.remove(mask)
         bpy.data.images.remove(image)
-        placed.append({"object": obj.name, "layer": layer.name, "frame": frame, "size": size})
+        placed.append({"object": obj.name, "layers": list(drawings), "frame": frame, "size": size})
     return placed
 
 
@@ -218,7 +410,7 @@ def _render_previews(placed: list[dict], job: dict) -> list[str]:
             hidden = name != entry["object"]
             bpy.data.objects[name].hide_render = hidden
         for layer in bpy.data.objects[entry["object"]].data.layers:
-            layer.hide = layer.name != entry["layer"]
+            layer.hide = layer.name not in entry["layers"]
         scene.frame_set(entry["frame"])
         scene.render.filepath = str(Path(job["preview_dir"]) / f"preview_{index:03d}.png")
         bpy.ops.render.render(write_still=True)
@@ -247,7 +439,7 @@ def main() -> None:
 
     placed = _build(job)
     objects = list(dict.fromkeys(entry["object"] for entry in placed))
-    layers = list(dict.fromkeys(entry["layer"] for entry in placed))
+    layers = list(dict.fromkeys(layer for entry in placed for layer in entry["layers"]))
     previews = _render_previews(placed, job)
     _save_traced(objects, job["output_blend"])
 

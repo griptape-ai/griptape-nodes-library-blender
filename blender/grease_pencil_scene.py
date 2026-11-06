@@ -36,16 +36,23 @@ def _read_attribute(attribute) -> np.ndarray:
     return values
 
 
-def copy_drawing(source, target, matrix: Matrix, material_map: list[int]) -> None:
-    """Append the strokes of drawing `source` to the empty drawing `target`.
+def copy_drawing(source, target, matrix: Matrix, material_map: list[int]) -> tuple[slice, slice]:
+    """Append the strokes of drawing `source` to drawing `target`, which may already hold strokes.
 
     Point positions and handles are transformed by `matrix` and radii are scaled by its average scale.
-    `material_map[i]` is the target material slot for source slot `i`.
+    `material_map[i]` is the target material slot for source slot `i`. Returns the curve range and the point range
+    the new strokes occupy in `target`.
     """
     sizes = [len(stroke.points) for stroke in source.strokes]
     if not sizes:
-        return
+        return slice(0, 0), slice(0, 0)
+    curve_start = len(target.strokes)
+    point_start = sum(len(stroke.points) for stroke in target.strokes)
     target.add_strokes(sizes)
+    new_ranges = {
+        "CURVE": slice(curve_start, curve_start + len(sizes)),
+        "POINT": slice(point_start, point_start + sum(sizes)),
+    }
     rotation_scale = np.array(matrix.to_3x3(), dtype=np.float32)
     translation = np.array(matrix.translation, dtype=np.float32)
     radius_scale = sum(matrix.to_scale()) / 3.0
@@ -62,8 +69,33 @@ def copy_drawing(source, target, matrix: Matrix, material_map: list[int]) -> Non
         destination = target.attributes.get(attribute.name)
         if destination is None:
             destination = target.attributes.new(attribute.name, attribute.data_type, attribute.domain)
-        destination.data.foreach_set(_COMPONENTS[attribute.data_type][0], values)
+        prop, width = _COMPONENTS[attribute.data_type]
+        if curve_start or point_start:
+            span = new_ranges[attribute.domain]
+            merged = _read_attribute(destination)
+            if attribute.name == "fill_id" and span.start:
+                # Strokes sharing a fill_id are filled together as one shape with holes, so keep each copy's apart.
+                values = values + merged[: span.start].max() + 1
+            merged[span.start * width : span.stop * width] = values
+            values = merged
+        destination.data.foreach_set(prop, values)
     target.tag_positions_changed()
+    return new_ranges["CURVE"], new_ranges["POINT"]
+
+
+def stamp_color(drawing, curves: slice, points: slice, color: tuple[float, float, float]) -> None:
+    """Set the color attributes of some strokes, so they show `color` (linear RGB) in Vertex Paint's color data.
+
+    `fill_color` is per stroke and `vertex_color` is per point. The material must be white for them to show true.
+    """
+    rgba = (*color, 1.0)
+    for name, domain, span in (("fill_color", "CURVE", curves), ("vertex_color", "POINT", points)):
+        attribute = drawing.attributes.get(name)
+        if attribute is None:
+            attribute = drawing.attributes.new(name, "FLOAT_COLOR", domain)
+        values = _read_attribute(attribute).reshape(-1, 4)
+        values[span] = rgba
+        attribute.data.foreach_set("color", values.ravel())
 
 
 def _base_name(name: str) -> str:
