@@ -123,23 +123,29 @@ def _copy_style(source, target) -> None:
 
 
 def _material_slots(source_materials, target_data) -> list[int]:
-    """Target slot for each source material. A target material with the same name is reused and takes its colors."""
+    """Target slot for each source material. A trace can have several materials for one color number, one per color
+    (`Drawing_Color_03`, `Drawing_Color_03.001`), so each source material claims its own target material of the same
+    base name, in name order, and takes its colors. An earlier trace's materials are reused that way on a re-run."""
     slots = []
+    claimed: set[int] = set()
     for material in source_materials:
-        index = next(
+        base = _base_name(material.name)
+        candidates = sorted(
             (
                 i
                 for i, existing in enumerate(target_data.materials)
-                if existing and existing.name == _base_name(material.name)
+                if existing and i not in claimed and _base_name(existing.name) == base
             ),
-            -1,
+            key=lambda i: target_data.materials[i].name,
         )
-        if index >= 0:
+        if candidates:
+            index = candidates[0]
             if target_data.materials[index] != material:
                 _copy_style(material, target_data.materials[index])
         else:
             target_data.materials.append(material)
             index = len(target_data.materials) - 1
+        claimed.add(index)
         slots.append(index)
     return slots
 

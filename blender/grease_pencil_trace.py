@@ -211,9 +211,15 @@ def send_to_open_scene(
     placement: Placement,
     host: str = blender_mcp_client.DEFAULT_HOST,
     port: int = blender_mcp_client.DEFAULT_PORT,
+    fill_prefixes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Bring the traced objects from `blend_path` into the scene open in Blender, through the MCP add-on."""
-    arguments = {"blend_path": blend_path, "object_names": object_names, "layer_names": layer_names}
+    arguments = {
+        "blend_path": blend_path,
+        "object_names": object_names,
+        "layer_names": layer_names,
+        "fill_prefixes": fill_prefixes or [],
+    }
     arguments.update(placement.as_kwargs())
     code = (
         SCENE_SCRIPT.read_text(encoding="utf-8")

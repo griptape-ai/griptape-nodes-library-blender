@@ -330,7 +330,8 @@ def _color_slot(data, job: dict, number: int, color: tuple[float, float, float])
             fill = material.grease_pencil.fill_color
             if max(abs(fill[axis] - color[axis]) for axis in range(3)) <= COLOR_MATCH:
                 return slot
-    data.materials.append(_ink_material(name, color, fill=True))
+    # Color fills always fill. The Fill setting is for the line art, which is number 0.
+    data.materials.append(_ink_material(name, color, fill=job["fill"] if number == 0 else True))
     return len(data.materials) - 1
 
 
@@ -408,7 +409,7 @@ def _build(job: dict) -> list[dict]:
         material = _ink_material(job["material_name"], tuple(job["color"]), job["fill"])
     elif not by_layer:
         # Color attributes tint the material's color, so it has to be white to show them true.
-        material = _ink_material(job["material_name"], (1.0, 1.0, 1.0), fill=True)
+        material = _ink_material(job["material_name"], (1.0, 1.0, 1.0), fill=job["fill"])
     else:
         material = None
     centerlines = job["centerline"] or [""] * len(job["images"])
@@ -488,6 +489,11 @@ def _build(job: dict) -> list[dict]:
             if mask is not None and mask is not image:
                 bpy.data.images.remove(mask)
         bpy.data.images.remove(image)
+        if by_layer:
+            # A fill first seen on a later image is created above `Lines`, and it would cover part of the strokes.
+            lines_layer = obj.data.layers.get(layer_name)
+            if lines_layer is not None:
+                obj.data.layers.move_top(lines_layer)
         if job["mode"] == "animated":
             # A layer holds its last keyframe until the next one, so a layer this image did not draw on needs an empty
             # keyframe here, or the previous image's drawing would stay on screen.
@@ -587,7 +593,13 @@ def main() -> None:
     previews = _render_previews(placed, job)
     _save_traced(objects, job["output_blend"])
 
-    result = {"objects": objects, "layers": layers, "previews": previews, "target_blend": None}
+    result = {
+        "objects": objects,
+        "layers": layers,
+        "fill_prefixes": _fill_prefixes(job),
+        "previews": previews,
+        "target_blend": None,
+    }
     if job["target_blend"]:
         bpy.ops.wm.open_mainfile(filepath=job["target_blend"])
         result["target_blend"] = import_traced(

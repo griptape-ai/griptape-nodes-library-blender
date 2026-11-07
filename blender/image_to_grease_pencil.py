@@ -213,7 +213,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             ParameterBool(
                 name="fill",
                 display_name="Fill",
-                tooltip="Fill the traced shapes. The tracer outlines each line, so turn this off to see only the outlines.",
+                tooltip="Fill the traced shapes. The tracer outlines each line, so turn this off to see only the outlines. With Colors on, only the line art is affected, and the color fills stay filled.",
                 default_value=True,
             )
         self.add_node_element(look_group)
@@ -519,6 +519,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                     result["layers"],
                     placement,
                     port=int(self.get_parameter_value("mcp_port")),
+                    fill_prefixes=result.get("fill_prefixes", []),
                 )
             except blender_mcp_client.BlenderMCPError as e:
                 # The previews and .blend outputs stay set, so the trace is still usable.
