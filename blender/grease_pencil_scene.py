@@ -36,16 +36,23 @@ def _read_attribute(attribute) -> np.ndarray:
     return values
 
 
-def copy_drawing(source, target, matrix: Matrix, material_map: list[int]) -> None:
-    """Append the strokes of drawing `source` to the empty drawing `target`.
+def copy_drawing(source, target, matrix: Matrix, material_map: list[int]) -> tuple[slice, slice]:
+    """Append the strokes of drawing `source` to drawing `target`, which may already hold strokes.
 
     Point positions and handles are transformed by `matrix` and radii are scaled by its average scale.
-    `material_map[i]` is the target material slot for source slot `i`.
+    `material_map[i]` is the target material slot for source slot `i`. Returns the curve range and the point range
+    the new strokes occupy in `target`.
     """
     sizes = [len(stroke.points) for stroke in source.strokes]
     if not sizes:
-        return
+        return slice(0, 0), slice(0, 0)
+    curve_start = len(target.strokes)
+    point_start = sum(len(stroke.points) for stroke in target.strokes)
     target.add_strokes(sizes)
+    new_ranges = {
+        "CURVE": slice(curve_start, curve_start + len(sizes)),
+        "POINT": slice(point_start, point_start + sum(sizes)),
+    }
     rotation_scale = np.array(matrix.to_3x3(), dtype=np.float32)
     translation = np.array(matrix.translation, dtype=np.float32)
     radius_scale = sum(matrix.to_scale()) / 3.0
@@ -62,8 +69,44 @@ def copy_drawing(source, target, matrix: Matrix, material_map: list[int]) -> Non
         destination = target.attributes.get(attribute.name)
         if destination is None:
             destination = target.attributes.new(attribute.name, attribute.data_type, attribute.domain)
-        destination.data.foreach_set(_COMPONENTS[attribute.data_type][0], values)
+        prop, width = _COMPONENTS[attribute.data_type]
+        if curve_start or point_start:
+            span = new_ranges[attribute.domain]
+            merged = _read_attribute(destination)
+            if attribute.name == "fill_id" and span.start:
+                # Strokes sharing a fill_id are filled together as one shape with holes, so keep each copy's apart.
+                values = values + merged[: span.start].max() + 1
+            merged[span.start * width : span.stop * width] = values
+            values = merged
+        destination.data.foreach_set(prop, values)
     target.tag_positions_changed()
+    return new_ranges["CURVE"], new_ranges["POINT"]
+
+
+def clear_fill(drawing, curves: slice) -> None:
+    """Stop the strokes in `curves` from filling. Open strokes fill by joining their ends, which a line must not do."""
+    attribute = drawing.attributes.get("fill_opacity")
+    if attribute is None:
+        attribute = drawing.attributes.new("fill_opacity", "FLOAT", "CURVE")
+        attribute.data.foreach_set("value", np.ones(len(attribute.data), dtype=np.float32))
+    values = _read_attribute(attribute)
+    values[curves] = 0.0
+    attribute.data.foreach_set("value", values)
+
+
+def stamp_color(drawing, curves: slice, points: slice, color: tuple[float, float, float]) -> None:
+    """Set the color attributes of some strokes, so they show `color` (linear RGB) in Vertex Paint's color data.
+
+    `fill_color` is per stroke and `vertex_color` is per point. The material must be white for them to show true.
+    """
+    rgba = (*color, 1.0)
+    for name, domain, span in (("fill_color", "CURVE", curves), ("vertex_color", "POINT", points)):
+        attribute = drawing.attributes.get(name)
+        if attribute is None:
+            attribute = drawing.attributes.new(name, "FLOAT_COLOR", domain)
+        values = _read_attribute(attribute).reshape(-1, 4)
+        values[span] = rgba
+        attribute.data.foreach_set("color", values.ravel())
 
 
 def _base_name(name: str) -> str:
@@ -80,23 +123,29 @@ def _copy_style(source, target) -> None:
 
 
 def _material_slots(source_materials, target_data) -> list[int]:
-    """Target slot for each source material. A target material with the same name is reused and takes its colors."""
+    """Target slot for each source material. A trace can have several materials for one color number, one per color
+    (`Drawing_Color_03`, `Drawing_Color_03.001`), so each source material claims its own target material of the same
+    base name, in name order, and takes its colors. An earlier trace's materials are reused that way on a re-run."""
     slots = []
+    claimed: set[int] = set()
     for material in source_materials:
-        index = next(
+        base = _base_name(material.name)
+        candidates = sorted(
             (
                 i
                 for i, existing in enumerate(target_data.materials)
-                if existing and existing.name == _base_name(material.name)
+                if existing and i not in claimed and _base_name(existing.name) == base
             ),
-            -1,
+            key=lambda i: target_data.materials[i].name,
         )
-        if index >= 0:
+        if candidates:
+            index = candidates[0]
             if target_data.materials[index] != material:
                 _copy_style(material, target_data.materials[index])
         else:
             target_data.materials.append(material)
             index = len(target_data.materials) - 1
+        claimed.add(index)
         slots.append(index)
     return slots
 
@@ -104,6 +153,12 @@ def _material_slots(source_materials, target_data) -> list[int]:
 def _earlier_trace(name: str, requested: str) -> bool:
     """Whether `name` is `requested` or a copy Blender suffixed because `requested` was taken."""
     return name == requested or _base_name(name) == requested
+
+
+def _is_fill_layer(name: str, fill_prefixes: list[str]) -> bool:
+    """Whether `name` is a numbered fill layer such as `Fill 4`, with a prefix from `fill_prefixes` such as `Fill `."""
+    base = _base_name(name)
+    return any(base.startswith(prefix) and base[len(prefix) :].isdigit() for prefix in fill_prefixes)
 
 
 def _recorded_objects(scene) -> list:
@@ -160,6 +215,7 @@ def import_traced(  # noqa: PLR0913
     location: list[float] | None = None,
     target_object: str = "",
     replace: bool = True,
+    fill_prefixes: list[str] | None = None,
 ) -> dict:
     """Bring traced Grease Pencil objects from `blend_path` into the current scene.
 
@@ -212,10 +268,13 @@ def import_traced(  # noqa: PLR0913
         scene[TRACED_OBJECTS] = {str(i): obj for i, obj in enumerate([*traced_objects, *loaded])}
         return {"objects": [obj.name for obj in loaded], "layers": list(layer_names), "target_object": ""}
 
+    fill_prefixes = fill_prefixes or []
     traced_layers = _recorded_layers(target.data)
     if replace:
         for existing in list(target.data.layers):
-            if existing.name in traced_layers and any(_earlier_trace(existing.name, name) for name in layer_names):
+            replaced = any(_earlier_trace(existing.name, name) for name in layer_names)
+            # An earlier trace may have made more fill layers than this one, so its other fills go too.
+            if existing.name in traced_layers and (replaced or _is_fill_layer(existing.name, fill_prefixes)):
                 traced_layers.discard(existing.name)
                 target.data.layers.remove(existing)
     layers = []

@@ -5,6 +5,10 @@ from typing import Any
 
 import blender_mcp_client
 from grease_pencil_trace import (
+    COLOR_ATTRIBUTES,
+    COLOR_LAYERS,
+    LINE_CENTERLINE,
+    LINE_OUTLINE,
     MODE_ANIMATED,
     MODE_SEPARATE,
     TURN_POLICIES,
@@ -31,6 +35,14 @@ from griptape_nodes.traits.options import Options
 from preview_sheets import animated_gif, contact_sheet
 
 MODE_LABELS = {"Animated (one object, a keyframe per image)": MODE_ANIMATED, "Separate (one per image)": MODE_SEPARATE}
+COLOR_TARGET_LABELS = {
+    "Layers (a layer and material per color)": COLOR_LAYERS,
+    "Attributes (one layer, color attributes)": COLOR_ATTRIBUTES,
+}
+LINE_STYLE_LABELS = {
+    "Centerline (continuous strokes)": LINE_CENTERLINE,
+    "Outline (filled shapes)": LINE_OUTLINE,
+}
 STROKE_LABELS = {"Poly (simplify and smooth apply)": "POLY", "Bezier (as traced)": "BEZIER"}
 
 
@@ -87,6 +99,14 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
         )
 
         with ParameterGroup(name="Trace") as trace_group:
+            ParameterString(
+                name="line_style",
+                display_name="Line Style",
+                tooltip="Centerline draws each line as one continuous stroke as thick as the line was, with solid areas such as pupils kept as filled shapes. Outline traces around every line and fills it.",
+                default_value=next(iter(LINE_STYLE_LABELS)),
+                traits={Options(choices=list(LINE_STYLE_LABELS))},
+                allow_output=False,
+            )
             ParameterFloat(
                 name="threshold",
                 display_name="Threshold",
@@ -102,6 +122,29 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 display_name="Invert",
                 tooltip="Trace the light parts instead, for light lines on dark.",
                 default_value=False,
+            )
+            ParameterInt(
+                name="colors",
+                display_name="Colors",
+                tooltip="Trace the line art in 'Color', then split what is left into this many flat colors and trace each one. 0 traces everything as one color.",
+                default_value=5,
+                min_val=0,
+                max_val=16,
+            )
+            ParameterString(
+                name="color_target",
+                display_name="Color Target",
+                tooltip="Where the colors go. Attributes stamps each stroke's color into the color attributes on one layer, for Vertex Paint. Layers puts each color on its own layer with its own material.",
+                default_value=next(iter(COLOR_TARGET_LABELS)),
+                traits={Options(choices=list(COLOR_TARGET_LABELS))},
+                allow_output=False,
+            )
+            ParameterInt(
+                name="min_shape",
+                display_name="Min Shape Size",
+                tooltip="Remove traced shapes smaller than this many square pixels, such as specks and slivers beside the lines. Only applies when Colors is above 0. 0 keeps everything.",
+                default_value=20,
+                min_val=0,
             )
             ParameterString(
                 name="turn_policy",
@@ -125,7 +168,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 name="stroke_type",
                 display_name="Stroke Type",
                 tooltip="Poly strokes can be simplified and smoothed; Bezier keeps the traced curves.",
-                default_value=next(iter(STROKE_LABELS)),
+                default_value="Bezier (as traced)",
                 traits={Options(choices=list(STROKE_LABELS))},
                 allow_output=False,
             )
@@ -133,7 +176,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 name="simplify",
                 display_name="Simplify",
                 tooltip="Remove points that barely change the shape. 0 keeps every point.",
-                default_value=0.0,
+                default_value=0.001,
                 min_val=0.0,
                 max_val=0.05,
                 slider=True,
@@ -170,7 +213,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             ParameterBool(
                 name="fill",
                 display_name="Fill",
-                tooltip="Fill the traced shapes. The tracer outlines each line, so turn this off to see only the outlines.",
+                tooltip="Fill the traced shapes. The tracer outlines each line, so turn this off to see only the outlines. With Colors on, only the line art is affected, and the color fills stay filled.",
                 default_value=True,
             )
         self.add_node_element(look_group)
@@ -360,6 +403,10 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             threshold=float(value("threshold")),
             turn_policy=value("turn_policy"),
             invert=bool(value("invert")),
+            line_style=LINE_STYLE_LABELS.get(value("line_style"), LINE_CENTERLINE),
+            colors=int(value("colors") or 0),
+            color_target=COLOR_TARGET_LABELS.get(value("color_target"), COLOR_LAYERS),
+            min_shape=int(value("min_shape") or 0),
             max_resolution=int(value("max_resolution")),
             stroke_type=STROKE_LABELS.get(value("stroke_type"), "POLY"),
             simplify=float(value("simplify")),
@@ -399,6 +446,21 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             paths.append(str(path))
         return paths
 
+    def _centerlines(self, images: list[str], settings: TraceSettings, folder: Path) -> list[str]:
+        """Trace each image's lines into strokes here in the engine, and write what Blender needs to a JSON each."""
+        try:
+            from centerline import trace_centerlines  # noqa: PLC0415 - needs scikit-image, scipy and skan
+        except ImportError as e:
+            msg = "Centerline needs the scikit-image, scipy and skan packages. Reinstall this library's dependencies, or set 'Line Style' to Outline."
+            raise NodeError(msg) from e
+        files = []
+        for index, image in enumerate(images, start=1):
+            traced = trace_centerlines(image, settings.threshold, settings.invert, settings.max_resolution)
+            json_path = folder / f"lines_{index:03d}.json"
+            traced.save(json_path, folder / f"solid_{index:03d}.png", folder / f"ink_{index:03d}.png")
+            files.append(str(json_path))
+        return files
+
     def _trace(self) -> str:
         settings = self._settings()
         placement = self._placement()
@@ -412,6 +474,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
             work = Path(folder)
             images = self._write_images(work)
             traced_blend = work / "traced.blend"
+            centerline = self._centerlines(images, settings, work) if settings.line_style == LINE_CENTERLINE else None
             job = trace_job(
                 images,
                 settings,
@@ -419,6 +482,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                 str(work),
                 target_blend=str(Path(target_blend).expanduser()) if target_blend else "",
                 placement=placement,
+                centerline=centerline,
             )
             result = run_trace(blender, job)
             blend = self._blend_file.build_file().write_bytes(traced_blend.read_bytes())
@@ -455,6 +519,7 @@ class BlenderImageToGreasePencil(SuccessFailureNode):
                     result["layers"],
                     placement,
                     port=int(self.get_parameter_value("mcp_port")),
+                    fill_prefixes=result.get("fill_prefixes", []),
                 )
             except blender_mcp_client.BlenderMCPError as e:
                 # The previews and .blend outputs stay set, so the trace is still usable.
