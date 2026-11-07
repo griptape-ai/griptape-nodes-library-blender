@@ -406,12 +406,17 @@ def _build(job: dict) -> list[dict]:
     scene = bpy.context.scene
     by_layer = job["colors"] and job["color_target"] == COLOR_LAYERS
     if not job["colors"]:
-        material = _ink_material(job["material_name"], tuple(job["color"]), job["fill"])
+        materials = [_ink_material(job["material_name"], tuple(job["color"]), job["fill"])]
     elif not by_layer:
-        # Color attributes tint the material's color, so it has to be white to show them true.
-        material = _ink_material(job["material_name"], (1.0, 1.0, 1.0), fill=job["fill"])
+        # Color attributes tint the material's color, so it has to be white to show them true. The color fills are
+        # slot 0 and always fill. The line art is slot 1 so the Fill setting reaches it alone, as it does in Layers mode.
+        fills = f"{job['material_name'].removesuffix('_Ink')}_Color"
+        materials = [
+            _ink_material(fills, (1.0, 1.0, 1.0), fill=True),
+            _ink_material(job["material_name"], (1.0, 1.0, 1.0), fill=job["fill"]),
+        ]
     else:
-        material = None
+        materials = []
     centerlines = job["centerline"] or [""] * len(job["images"])
     placed = []
     for path, (object_name, layer_name, frame), lines_path in zip(
@@ -436,7 +441,7 @@ def _build(job: dict) -> list[dict]:
         obj = bpy.data.objects.get(object_name)
         if obj is None:
             data = bpy.data.grease_pencils.new(object_name)
-            if material is not None:
+            for material in materials:
                 data.materials.append(material)
             obj = bpy.data.objects.new(object_name, data)
             scene.collection.objects.link(obj)
@@ -467,7 +472,10 @@ def _build(job: dict) -> list[dict]:
                     layer.use_lights = False
                 drawings[label] = layer.frames.new(frame).drawing
             drawing = drawings[label]
-            slot = _color_slot(obj.data, job, number, color) if by_layer and number is not None else 0
+            if by_layer and number is not None:
+                slot = _color_slot(obj.data, job, number, color)
+            else:
+                slot = 1 if materials[1:] and number == 0 else 0
             placement = _placement(size, job["size"])
             ranges = []
             if traced is not None:
