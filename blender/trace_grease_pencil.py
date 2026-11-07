@@ -34,6 +34,8 @@ CLUSTER_SAMPLE = 50000
 CLUSTER_ITERATIONS = 12
 CLUSTER_CHUNK = 500_000
 HALO = 2
+COLOR_MATCH = 0.02  # linear RGB distance within which a fill of the same number reuses another image's material
+BORDER_SHARE = 0.05  # a color needs this share of the image border to count as a candidate for the paper
 LUMA = np.array([0.2126, 0.7152, 0.0722])
 
 
@@ -153,8 +155,11 @@ def _ink_mask(flat: np.ndarray, width: int, height: int, job: dict, lines: dict 
     return (flat.max(axis=1) < job["threshold"]).reshape(height, width)
 
 
-def _color_parts(image, job: dict, lines: dict | None) -> list[tuple[int, tuple[float, float, float], object]]:
-    """Split an image into the line art and its flat colors. Returns (number, linear RGB, mask image) per part.
+def _color_parts(
+    image, job: dict, lines: dict | None
+) -> tuple[list[tuple[int, tuple[float, float, float], object]], tuple[float, float, float] | None]:
+    """Split an image into the line art and its flat colors. Returns the parts and the linear RGB of the paper that
+    was skipped, or None when no paper was skipped. A part is (number, linear RGB, mask image).
 
     Number 0 is the line art: every pixel whose brightest channel is below the threshold, in the ink color. The rest of the pixels are
     clustered into `colors` colors, numbered from 1, darkest first, so a number means the same kind of color on
@@ -169,18 +174,26 @@ def _color_parts(image, job: dict, lines: dict | None) -> list[tuple[int, tuple[
     ink = _ink_mask(flat, width, height, job, lines)
     rest = flat[~ink.ravel()]
     parts = []
+    paper = None
     if len(rest):
         centers = _cluster(rest, job["colors"])
         labels = _nearest(flat, centers).reshape(height, width)
         areas = np.bincount(labels[~ink], minlength=len(centers))
-        # The paper often splits into a few near-identical clusters, so every color close to the one touching the
-        # edge is skipped, or the others trace as hundreds of blobs.
+        # The paper often splits into a few near-identical clusters, so every color close to the paper color is
+        # skipped, or the others trace as hundreds of blobs. The paper is the lightest color with a real share of
+        # the border. The color touching most of it can be a painted area that runs off the edge, such as a hillside.
         background = set()
         if job["skip_background"]:
             border = np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
-            edge = int(np.bincount(border, minlength=len(centers)).argmax())
+            on_border = np.bincount(border, minlength=len(centers))
+            touching = np.flatnonzero(on_border >= BORDER_SHARE * len(border))
+            if not len(touching):
+                touching = np.array([on_border.argmax()])
+            edge = int(touching[np.argmax((centers @ LUMA)[touching])])
             distance = np.linalg.norm(centers - centers[edge], axis=1)
             background = {int(i) for i in np.flatnonzero(distance <= job["background_tolerance"])} | {edge}
+            red, green, blue = (float(v) for v in _srgb_to_linear(centers[edge]))
+            paper = (red, green, blue)
         number = {int(cluster): place + 1 for place, cluster in enumerate(np.argsort(centers @ LUMA))}
         cleanup = job["color_cleanup"]
         # The soft edge beside a line is neither line nor color, so count it as line when sorting the colors.
@@ -211,7 +224,7 @@ def _color_parts(image, job: dict, lines: dict | None) -> list[tuple[int, tuple[
     if not parts:
         msg = "The image has only one color, so there is nothing to trace after skipping the background."
         raise ValueError(msg)
-    return parts
+    return parts, paper
 
 
 def _trace(image, job: dict):
@@ -308,11 +321,15 @@ def _ink_material(name: str, color: tuple[float, float, float], fill: bool):
 
 
 def _color_slot(data, job: dict, number: int, color: tuple[float, float, float]) -> int:
-    """Material slot for color `number` on `data`, adding a material of that color the first time."""
+    """Material slot for color `number` on `data`. Each image is clustered on its own, so the same number can be a
+    different color on another image. A material is reused only when its color is close, or the new color gets its
+    own material, which Blender suffixes (`.001`)."""
     name = f"{job['material_name'].removesuffix('_Ink')}_Color_{number:02d}" if number else job["material_name"]
     for slot, material in enumerate(data.materials):
-        if material and material.name == name:
-            return slot
+        if material and (material.name == name or material.name.startswith(f"{name}.")):
+            fill = material.grease_pencil.fill_color
+            if max(abs(fill[axis] - color[axis]) for axis in range(3)) <= COLOR_MATCH:
+                return slot
     data.materials.append(_ink_material(name, color, fill=True))
     return len(data.materials) - 1
 
@@ -360,6 +377,12 @@ def _fill_layer_name(layer_name: str, number: int, job: dict) -> str:
     return f"{layer_name.replace(job['layer_name'], job['fill_name'], 1)} {number}"
 
 
+def _fill_prefixes(job: dict) -> list[str]:
+    """The start of every fill layer name this job can make, such as `Fill ` for `Fill 2`."""
+    names = {layer for _, layer, _ in _destinations(job)}
+    return sorted({f"{name.replace(job['layer_name'], job['fill_name'], 1)} " for name in names})
+
+
 def _names(base: str, count: int) -> list[str]:
     if count == 1:
         return [base]
@@ -401,8 +424,9 @@ def _build(job: dict) -> list[dict]:
             # The engine traced a rescaled copy, so match it or the ink mask for the colors would not line up.
             image.scale(*lines["size"])
         size = tuple(image.size)
+        paper = None
         if job["colors"]:
-            parts = _color_parts(image, job, lines)
+            parts, paper = _color_parts(image, job, lines)
         elif lines is not None:
             parts = [(None, tuple(job["color"]), _solid_image(lines))]
         else:
@@ -464,7 +488,17 @@ def _build(job: dict) -> list[dict]:
             if mask is not None and mask is not image:
                 bpy.data.images.remove(mask)
         bpy.data.images.remove(image)
-        placed.append({"object": obj.name, "layers": list(drawings), "frame": frame, "size": size})
+        if job["mode"] == "animated":
+            # A layer holds its last keyframe until the next one, so a layer this image did not draw on needs an empty
+            # keyframe here, or the previous image's drawing would stay on screen.
+            for layer in obj.data.layers:
+                if (
+                    layer.name not in drawings
+                    and len(layer.frames)
+                    and all(f.frame_number != frame for f in layer.frames)
+                ):
+                    layer.frames.new(frame)
+        placed.append({"object": obj.name, "layers": list(drawings), "frame": frame, "size": size, "paper": paper})
     return placed
 
 
@@ -478,7 +512,8 @@ def _reload_scene(job: dict) -> None:
 
 
 def _render_previews(placed: list[dict], job: dict) -> list[str]:
-    """Render each traced image on white through an orthographic camera framing the image's area."""
+    """Render each traced image through an orthographic camera framing the image's area. The background is the paper
+    color that was skipped, or white when none was."""
     scene = bpy.context.scene
     world = bpy.data.worlds.new("Preview")
     if world.node_tree is None:
@@ -517,6 +552,8 @@ def _render_previews(placed: list[dict], job: dict) -> list[str]:
             bpy.data.objects[name].hide_render = hidden
         for layer in bpy.data.objects[entry["object"]].data.layers:
             layer.hide = layer.name not in entry["layers"]
+        paper = entry["paper"] or (1.0, 1.0, 1.0)
+        background.inputs["Color"].default_value = (*paper, 1.0)
         scene.frame_set(entry["frame"])
         scene.render.filepath = str(Path(job["preview_dir"]) / f"preview_{index:03d}.png")
         bpy.ops.render.render(write_still=True)
@@ -553,7 +590,9 @@ def main() -> None:
     result = {"objects": objects, "layers": layers, "previews": previews, "target_blend": None}
     if job["target_blend"]:
         bpy.ops.wm.open_mainfile(filepath=job["target_blend"])
-        result["target_blend"] = import_traced(job["output_blend"], objects, layers, **job["import"])
+        result["target_blend"] = import_traced(
+            job["output_blend"], objects, layers, fill_prefixes=_fill_prefixes(job), **job["import"]
+        )
         bpy.ops.wm.save_mainfile()
 
     Path(result_path).write_text(json.dumps(result), encoding="utf-8")

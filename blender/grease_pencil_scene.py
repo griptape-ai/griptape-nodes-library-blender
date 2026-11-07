@@ -149,6 +149,12 @@ def _earlier_trace(name: str, requested: str) -> bool:
     return name == requested or _base_name(name) == requested
 
 
+def _is_fill_layer(name: str, fill_prefixes: list[str]) -> bool:
+    """Whether `name` is a numbered fill layer such as `Fill 4`, with a prefix from `fill_prefixes` such as `Fill `."""
+    base = _base_name(name)
+    return any(base.startswith(prefix) and base[len(prefix) :].isdigit() for prefix in fill_prefixes)
+
+
 def _recorded_objects(scene) -> list:
     record = scene.get(TRACED_OBJECTS)
     return [obj for obj in record.values() if isinstance(obj, bpy.types.Object)] if hasattr(record, "values") else []
@@ -203,6 +209,7 @@ def import_traced(  # noqa: PLR0913
     location: list[float] | None = None,
     target_object: str = "",
     replace: bool = True,
+    fill_prefixes: list[str] | None = None,
 ) -> dict:
     """Bring traced Grease Pencil objects from `blend_path` into the current scene.
 
@@ -255,10 +262,13 @@ def import_traced(  # noqa: PLR0913
         scene[TRACED_OBJECTS] = {str(i): obj for i, obj in enumerate([*traced_objects, *loaded])}
         return {"objects": [obj.name for obj in loaded], "layers": list(layer_names), "target_object": ""}
 
+    fill_prefixes = fill_prefixes or []
     traced_layers = _recorded_layers(target.data)
     if replace:
         for existing in list(target.data.layers):
-            if existing.name in traced_layers and any(_earlier_trace(existing.name, name) for name in layer_names):
+            replaced = any(_earlier_trace(existing.name, name) for name in layer_names)
+            # An earlier trace may have made more fill layers than this one, so its other fills go too.
+            if existing.name in traced_layers and (replaced or _is_fill_layer(existing.name, fill_prefixes)):
                 traced_layers.discard(existing.name)
                 target.data.layers.remove(existing)
     layers = []
